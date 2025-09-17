@@ -23,7 +23,8 @@ class Bus(models.Model):
 class Location(models.Model):
  id = models.AutoField(primary_key=True) 
  name = models.CharField(max_length=100, unique=True)  
-
+ lat = models.FloatField()
+ lon = models.FloatField()
  def __str__(self):
         return self.name
  
