@@ -79,7 +79,7 @@ DATABASES = {
    
     'default': {
         'ENGINE': 'django.db.backends.mysql',
-        'NAME': 'MyUberApp_db',       # your MySQL database name
+        'NAME': 'myuberapp_db',       # your MySQL database name
         'USER': 'root',               # your MySQL username
         'PASSWORD': 'Maya#2024',   # your MySQL password
         'HOST': 'localhost',          # usually localhost

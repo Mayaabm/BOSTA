@@ -20,20 +20,22 @@ class Bus(models.Model):
  speed = models.FloatField(default=0.0) 
 
 
-class Location(models.Model):
- id = models.AutoField(primary_key=True) 
- name = models.CharField(max_length=100, unique=True)  
- lat = models.FloatField()
- lon = models.FloatField()
- def __str__(self):
-        return self.name
- 
 class Route(models.Model):
- id = models.AutoField(primary_key=True)
- name = models.CharField(max_length=100)
- previous_route = models.ForeignKey(
-        'self', on_delete=models.SET_NULL, null=True, blank=True
-    )
+    name = models.CharField(max_length=100)
+    description = models.TextField(null=True, blank=True)
+
+    def __str__(self):
+        return self.name
+
+class Location(models.Model):
+    route = models.ForeignKey(Route, on_delete=models.CASCADE, null=True)
+    latitude = models.FloatField()
+    longitude = models.FloatField()
+    order = models.IntegerField()  # The order of the stop in the line
+
+    def __str__(self):
+        return f"{self.bus_line.name} Stop {self.order}"
+    
 class Trip(models.Model):
   id = models.AutoField(primary_key=True) 
   bus = models.ForeignKey(Bus, on_delete=models.CASCADE)  
