@@ -28,13 +28,15 @@ class Route(models.Model):
         return self.name
 
 class Location(models.Model):
-    route = models.ForeignKey(Route, on_delete=models.CASCADE, null=True)
-    latitude = models.FloatField()
-    longitude = models.FloatField()
-    order = models.IntegerField()  # The order of the stop in the line
 
-    def __str__(self):
-        return f"{self.bus_line.name} Stop {self.order}"
+  route = models.ForeignKey(Route, on_delete=models.CASCADE, null=True)
+  latitude = models.FloatField()
+  longitude = models.FloatField()
+  order = models.IntegerField()  # The order of the stop in the line
+  description = models.CharField(max_length=255, null=True, blank=True)  # Name or description of the location
+
+  def __str__(self):
+    return f"{self.route.name} Stop {self.order}"  # Fixed attribute name
     
 class Trip(models.Model):
   id = models.AutoField(primary_key=True) 
