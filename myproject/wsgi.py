@@ -12,5 +12,5 @@ import os
 from django.core.wsgi import get_wsgi_application
 
 os.environ.setdefault('DJANGO_SETTINGS_MODULE', 'myproject.settings')
-
+os.environ['GDAL_LIBRARY_PATH'] = r"C:\Program Files\GDAL\gdal.dll"
 application = get_wsgi_application()

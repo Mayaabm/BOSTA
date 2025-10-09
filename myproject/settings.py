@@ -10,11 +10,17 @@ For the full list of settings and their values, see
 https://docs.djangoproject.com/en/5.2/ref/settings/
 """
 
-import pymysql # type: ignore
+ # type: ignore
+import os
+
 from pathlib import Path
 
 # Build paths inside the project like this: BASE_DIR / 'subdir'.
 BASE_DIR = Path(__file__).resolve().parent.parent
+
+#GEOS_LIBRARY_PATH = r'C:\OSGeo4W\bin\geos_c.dll'
+#GDAL_LIBRARY_PATH = r'C:\OSGeo4W\bin\gdal311.dll'
+
 
 
 # Quick-start development settings - unsuitable for production
@@ -39,7 +45,8 @@ INSTALLED_APPS = [
     'django.contrib.messages',
     'django.contrib.staticfiles',
     'api',
-     'rest_framework',  
+     'rest_framework',
+    'django.contrib.gis',  
 ]
 
 MIDDLEWARE = [
@@ -78,12 +85,12 @@ WSGI_APPLICATION = 'myproject.wsgi.application'
 DATABASES = {
    
     'default': {
-        'ENGINE': 'django.db.backends.mysql',
-        'NAME': 'myuberapp_db',       # your MySQL database name
-        'USER': 'root',               # your MySQL username
-        'PASSWORD': 'Maya#2024',   # your MySQL password
+        'ENGINE': 'django.contrib.gis.db.backends.postgis',
+        'NAME': 'bosta',       # your MySQL database name
+        'USER': 'postgres',               # your MySQL username
+        'PASSWORD': 'Fifasmyt',   # your MySQL password
         'HOST': 'localhost',          # usually localhost
-        'PORT': '3306',               # default MySQL port
+        'PORT': '5432',               # default MySQL port
     
 }
 }
@@ -130,5 +137,8 @@ STATIC_URL = 'static/'
 
 DEFAULT_AUTO_FIELD = 'django.db.models.BigAutoField'
 
+GDAL_LIBRARY_PATH = r"C:\Program Files\GDAL\gdal.dll"
+GEOS_LIBRARY_PATH = r"C:\Program Files\GDAL\geos_c.dll"
 
-pymysql.install_as_MySQLdb()
+#Set-ExecutionPolicy -Scope Process -ExecutionPolicy Bypass
+#.\venv312\Scripts\activate

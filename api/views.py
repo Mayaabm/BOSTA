@@ -1,32 +1,29 @@
-from django.shortcuts import render
 # api/views.py
-from rest_framework.response import Response
 from rest_framework.decorators import api_view
-from .models import Bus
-from .serializers import BusSerializer
-from .utils import haversine
+from rest_framework.response import Response
+from rest_framework.exceptions import ValidationError
+from .services.geo import nearest_stops, nearby_buses
+from .serializers import LocationNearbySerializer, BusNearbySerializer
 
-@api_view(['GET'])
-def get_buses(request):
-    buses = Bus.objects.all()
-    serializer = BusSerializer(buses, many=True)
-    return Response(serializer.data)
-
-@api_view(['GET'])
-def buses_near_location(request):
+def _parse_ll(request):
     try:
-        lat = float(request.GET.get('lat'))
-        lon = float(request.GET.get('lon'))
-        radius = float(request.GET.get('radius', 2))  # default 2 km
-    except:
-        return Response({"error": "Invalid parameters"}, status=400)
-    
-    nearby_buses = []
-    
-    for bus in Bus.objects.all():
-        distance = haversine(lat, lon, bus.lat, bus.lon)
-        if distance <= radius:
-            nearby_buses.append(bus)
-    
-    serializer = BusSerializer(nearby_buses, many=True)
-    return Response(serializer.data)
+        lat = float(request.query_params.get("lat"))
+        lon = float(request.query_params.get("lon"))
+    except (TypeError, ValueError):
+        raise ValidationError("lat and lon are required floats")
+    radius_m = int(request.query_params.get("r", 600))
+    return lat, lon, radius_m
+
+@api_view(["GET"])
+def stops_nearby_view(request):
+    lat, lon, r = _parse_ll(request)
+    qs = nearest_stops(lat, lon, radius_m=r)
+    data = LocationNearbySerializer(qs, many=True).data
+    return Response(data)
+
+@api_view(["GET"])
+def buses_nearby_view(request):
+    lat, lon, r = _parse_ll(request)
+    qs = nearby_buses(lat, lon, radius_m=r)
+    data = BusNearbySerializer(qs, many=True).data
+    return Response(data)

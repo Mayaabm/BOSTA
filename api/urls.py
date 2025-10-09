@@ -1,9 +1,8 @@
 # api/urls.py
 from django.urls import path
-from .views import get_buses
-from.views import buses_near_location
+from .views import stops_nearby_view, buses_nearby_view
 
 urlpatterns = [
-    path('buses/', get_buses),
-     path('buses/near/', buses_near_location),
+    path("stops/nearby", stops_nearby_view),
+    path("vehicles/nearby", buses_nearby_view),
 ]

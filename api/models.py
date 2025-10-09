@@ -1,78 +1,60 @@
-import os
-import django
-
-
-os.environ.setdefault("DJANGO_SETTINGS_MODULE", "myproject.settings")
-
-
-from django.contrib.auth.models import User
-
-
-
-from django.db import models
-from django.contrib.auth.models import User
-
-
-from django.db import models
-
 # api/models.py
-from django.db import models
+from django.contrib.gis.db import models  # this is key
 
 class Bus(models.Model):
-    Bus_ID = models.AutoField(primary_key=True, db_column='Bus_ID')
-    plate_number = models.CharField(max_length=20, unique=True)
+    plate_number = models.CharField(max_length=20, unique=True, db_index=True)
     capacity = models.IntegerField()
-    current_location = models.CharField(max_length=100, blank=True)
-    current_lat = models.FloatField(null=True, blank=True)
-    current_lon = models.FloatField(null=True, blank=True)
-    speed = models.FloatField(default=0.0)
+    speed_mps = models.FloatField(default=0.0)  # store m/s for math
+
+    def __str__(self):
+        return self.plate_number
 
 
 class Route(models.Model):
-    id = models.AutoField(primary_key=True)
     name = models.CharField(max_length=100, unique=True)
-    description = models.TextField(null=True, blank=True)
-
-class Location(models.Model):
-    id = models.AutoField(primary_key=True)
-    route = models.ForeignKey(Route, on_delete=models.CASCADE, related_name='stops')
-    latitude = models.FloatField()
-    longitude = models.FloatField()
-    order = models.IntegerField()
-    description = models.CharField(max_length=255, null=True, blank=True)
-    cum_km = models.FloatField(default=0.0)
-
-    class Meta:
-        unique_together = ('route', 'order')
-        ordering = ['route', 'order']
-
-class Trip(models.Model):
-    id = models.AutoField(primary_key=True)
-    bus = models.ForeignKey(Bus, on_delete=models.CASCADE)  # still targets Bus.Bus_ID (PK)
-    route = models.ForeignKey(Route, on_delete=models.CASCADE)
-    departure_time = models.DateTimeField()
-    current_location = models.ForeignKey(Location, on_delete=models.SET_NULL, null=True, blank=True)
-    estimated_arrival_time = models.DateTimeField()
-
-
-
-
-class Passenger(models.Model):
-    id = models.AutoField(primary_key=True)  # Explicit PK
-    current_location = models.ForeignKey(
-        Location,
-        on_delete=models.SET_NULL,
-        null=True,
-        blank=True,
-        related_name='waiting_passengers'
-    )  # FK → Location
-    destination = models.ForeignKey(
-        Location,
-        on_delete=models.SET_NULL,
-        null=True,
-        blank=True,
-        related_name='destination_passengers'
-    )  # FK → Location
+    description = models.TextField(blank=True)
+    geometry = models.LineStringField(srid=4326, null=True, blank=True)
 
     def __str__(self):
-        return f"Passenger {self.id}"
+        return self.name
+
+
+class Location(models.Model):
+    point = models.PointField(srid=4326)
+    description = models.CharField(max_length=255, blank=True)
+    routes = models.ManyToManyField(Route, related_name="locations", blank=True)
+
+    class Meta:
+        unique_together = ('point',)
+
+    def __str__(self):
+        return self.description or f"Location {self.id}"
+
+
+
+
+class Trip(models.Model):
+    bus = models.ForeignKey(Bus, on_delete=models.CASCADE, related_name='trips')
+    route = models.ForeignKey(Route, on_delete=models.CASCADE, related_name='trips')
+    departure_time = models.DateTimeField()
+    current_location = models.ForeignKey(Location, on_delete=models.SET_NULL, null=True, blank=True)
+    estimated_arrival_time = models.DateTimeField(null=True, blank=True)
+
+    def __str__(self):
+        return f"{self.bus} on {self.route} ({self.departure_time})"
+
+
+class VehiclePosition(models.Model):
+    bus = models.ForeignKey(Bus, on_delete=models.CASCADE, related_name='positions')
+    location = models.PointField(geography=True)
+    heading_deg = models.FloatField(null=True, blank=True)
+    speed_mps = models.FloatField(null=True, blank=True)
+    recorded_at = models.DateTimeField(auto_now_add=True, db_index=True)
+
+    class Meta:
+        indexes = [
+            models.Index(fields=['bus', 'recorded_at']),
+        ]
+
+    def __str__(self):
+        return f"{self.bus.plate_number} @ {self.recorded_at}"
