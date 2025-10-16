@@ -48,6 +48,8 @@ INSTALLED_APPS = [
      'rest_framework',
     'django.contrib.gis',  
 ]
+AUTH_USER_MODEL = 'auth.User'
+
 
 MIDDLEWARE = [
     'django.middleware.security.SecurityMiddleware',
@@ -64,7 +66,7 @@ ROOT_URLCONF = 'myproject.urls'
 TEMPLATES = [
     {
         'BACKEND': 'django.template.backends.django.DjangoTemplates',
-        'DIRS': [],
+        'DIRS': [str(BASE_DIR / 'templates')],
         'APP_DIRS': True,
         'OPTIONS': {
             'context_processors': [
@@ -92,7 +94,7 @@ DATABASES = {
         'HOST': 'localhost',          # usually localhost
         'PORT': '5432',               # default MySQL port
     
-}
+ }
 }
 
 
@@ -132,6 +134,7 @@ USE_TZ = True
 
 STATIC_URL = 'static/'
 
+
 # Default primary key field type
 # https://docs.djangoproject.com/en/5.2/ref/settings/#default-auto-field
 
@@ -140,5 +143,6 @@ DEFAULT_AUTO_FIELD = 'django.db.models.BigAutoField'
 GDAL_LIBRARY_PATH = r"C:\Program Files\GDAL\gdal.dll"
 GEOS_LIBRARY_PATH = r"C:\Program Files\GDAL\geos_c.dll"
 
-#Set-ExecutionPolicy -Scope Process -ExecutionPolicy Bypass
+#`Set-ExecutionPolicy -Scope Process -ExecutionPolicy Bypass`
 #.\venv312\Scripts\activate
+

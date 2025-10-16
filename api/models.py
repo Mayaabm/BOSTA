@@ -1,10 +1,26 @@
 # api/models.py
 from django.contrib.gis.db import models  # this is key
+from django.contrib.auth.models import User
+from django.contrib.gis.db import models as gis_models
+
+
+class CustomUserProfile(models.Model):
+    user = models.OneToOneField(User, on_delete=models.CASCADE, related_name="profile")
+    current_location = models.PointField(geography=True, srid=4326, null=True, blank=True)
+    destination = models.PointField(geography=True, srid=4326, null=True, blank=True)   
+    is_driver = models.BooleanField(default=False)
+    is_commuter = models.BooleanField(default=True)
+
+    def __str__(self):
+        return f"Profile for {self.user.username}"
+
 
 class Bus(models.Model):
     plate_number = models.CharField(max_length=20, unique=True, db_index=True)
     capacity = models.IntegerField()
     speed_mps = models.FloatField(default=0.0)  # store m/s for math
+    driver = models.OneToOneField('CustomUserProfile', on_delete=models.SET_NULL, null=True, blank=True)
+
 
     def __str__(self):
         return self.plate_number

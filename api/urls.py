@@ -1,9 +1,12 @@
 # api/urls.py
 from django.urls import path
-from .views import stops_nearby_view, buses_nearby_view
+from .views import  eta,buses_nearby, buses_to_destination
 from api import views
 
 urlpatterns = [
     path('eta/', views.eta),
+    path('buses_nearby/', buses_nearby),
+    path('buses_to_destination/', buses_to_destination),
+
 
 ]

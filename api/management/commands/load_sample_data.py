@@ -1,5 +1,5 @@
 from django.core.management.base import BaseCommand
-from django.contrib.gis.geos import Point
+from django.contrib.gis.geos import Point, LineString
 from api.models import Route, Location, Bus, VehiclePosition, Trip
 from datetime import datetime, timedelta
 
@@ -23,8 +23,9 @@ class Command(BaseCommand):
             )
             routes.append(route)
 
-        # Create locations
+        # Create locations and build route geometries
         for route_idx, route in enumerate(routes):
+            points = []
             for i in range(5):
                 lon = 35.5 + i * 0.005
                 lat = 33.9 + route_idx * 0.005 + i * 0.002
@@ -34,6 +35,11 @@ class Command(BaseCommand):
                     defaults={"description": f"Stop {i+1} on {route.name}"}
                 )
                 location.routes.add(route)
+                points.append(point)
+
+            # ✅ Build LineString for route.geometry
+            route.geometry = LineString(points, srid=4326)
+            route.save()
 
         # Create buses and assign them to trips on each route
         for i, route in enumerate(routes):
@@ -58,7 +64,8 @@ class Command(BaseCommand):
                     bus=bus,
                     location=Point(
                         35.5 + i * 0.01 + j * 0.001,
-                        33.9 + i * 0.01 + j * 0.001
+                        33.9 + i * 0.01 + j * 0.001,
+                        srid=4326
                     ),
                     recorded_at=datetime.now() - timedelta(minutes=j),
                     speed_mps=bus.speed_mps,
