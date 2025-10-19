@@ -22,6 +22,7 @@ class Bus(models.Model):
     driver = models.OneToOneField('CustomUserProfile', on_delete=models.SET_NULL, null=True, blank=True)
 
 
+
     def __str__(self):
         return self.plate_number
 
@@ -29,7 +30,7 @@ class Bus(models.Model):
 class Route(models.Model):
     name = models.CharField(max_length=100, unique=True)
     description = models.TextField(blank=True)
-    geometry = models.LineStringField(srid=4326, null=True, blank=True)
+    geometry = models.LineStringField(geography=True, srid=4326, null=True, blank=True)
 
     def __str__(self):
         return self.name
