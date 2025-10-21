@@ -1,6 +1,7 @@
 {
     "terminal.integrated.env.windows": {
     "Path": "C:\\Program Files\\GDAL;${env:Path}"
-}
+},
+"java.configuration.updateBuildConfiguration": "interactive"
 
 }

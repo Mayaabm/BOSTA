@@ -80,6 +80,8 @@ def buses_nearby(request):
         .annotate(geo=Cast('location', GeometryField()))
         .filter(recorded_at__gte=timezone.now() - timedelta(hours=2))
         .filter(geo__distance_lte=(user_location, D(m=radius)))  # compare as geography
+        # Use `dwithin` for efficient, meter-based distance filtering
+        .filter(location__dwithin=(user_location, D(m=radius)))
         .annotate(distance=Distance('location', user_location))
         .order_by('distance')
     )
@@ -89,12 +91,17 @@ def buses_nearby(request):
     data = []
     for pos in latest_positions:
         print("🚌 FOUND BUS:", pos.bus.plate_number, pos.location)
+        # Match the structure expected by the Flutter Bus.fromJson factory
         data.append({
-            "bus_id": pos.bus_id,
-            "route": getattr(pos.bus, 'route', None),
+            "id": pos.bus.id,
+            "plate_number": pos.bus.plate_number,
+            "current_point": {
+                "type": "Point",
+                "coordinates": [pos.location.x, pos.location.y]
+            },
+            "speed_mps": pos.speed,
             "distance_m": round(pos.distance.m, 2),
-            "lat": pos.location.y,
-            "lon": pos.location.x,
+            "route": pos.bus.route.name if hasattr(pos.bus, 'route') and pos.bus.route else None,
         })
     return Response(data)
 
