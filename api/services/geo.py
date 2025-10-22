@@ -17,8 +17,8 @@ def nearest_stops(lat: float, lon: float, radius_m: int = 600, limit: int = 20):
 def nearby_buses(lat: float, lon: float, radius_m: int = 1500, limit: int = 50):
     p = Point(lon, lat, srid=4326)
     return (
-        Bus.objects
-        .filter(current_point__distance_lte=(p, D(m=radius_m)))
-        .annotate(distance_m=Distance('current_point', p))
+        Bus.objects # Query the Bus model directly
+        .filter(current_location__isnull=False, current_location__distance_lte=(p, D(m=radius_m)))
+        .annotate(distance_m=Distance('current_location', p))
         .order_by('distance_m')[:limit]
     )

@@ -99,7 +99,8 @@ def buses_nearby(request):
                 "type": "Point",
                 "coordinates": [pos.location.x, pos.location.y]
             },
-            "speed_mps": pos.speed,
+            "speed_mps": pos.speed_mps,
+
             "distance_m": round(pos.distance.m, 2),
             "route": pos.bus.route.name if hasattr(pos.bus, 'route') and pos.bus.route else None,
         })

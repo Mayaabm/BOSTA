@@ -18,10 +18,10 @@ class CustomUserProfile(models.Model):
 class Bus(models.Model):
     plate_number = models.CharField(max_length=20, unique=True, db_index=True)
     capacity = models.IntegerField()
-    speed_mps = models.FloatField(default=0.0)  # store m/s for math
+    speed_mps = models.FloatField(default=0.0)  # Current speed in m/s
     driver = models.OneToOneField('CustomUserProfile', on_delete=models.SET_NULL, null=True, blank=True)
-
-
+    current_location = models.PointField(geography=True, srid=4326, null=True, blank=True)
+    last_reported_at = models.DateTimeField(null=True, blank=True)
 
     def __str__(self):
         return self.plate_number
