@@ -19,9 +19,9 @@ class LocationNearbySerializer(serializers.ModelSerializer):
         fields = ["id", "route_id", "route_name", "order", "description", "point", "distance_m"]
 
 class BusNearbySerializer(serializers.ModelSerializer):
-    current_point = PointAsGeoJSONField()
-    distance_m = serializers.FloatField()
-    route_name = serializers.CharField(source='route_name', read_only=True) # Annotated field from view
+    current_point = PointAsGeoJSONField(source='current_location')
+    distance_m = serializers.FloatField(source='distance_m.m', read_only=True)
+    route_name = serializers.CharField(read_only=True) # Annotated field from view
 
     class Meta:
         model = Bus

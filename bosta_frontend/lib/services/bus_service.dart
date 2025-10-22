@@ -7,7 +7,7 @@ class BusService {
   static Future<List<Bus>> getNearbyBuses({
     required double latitude,
     required double longitude,
-    double radius = 1000,
+    double radius = 100000,
   }) async {
     final url = Uri.parse(
       '${ApiEndpoints.busesNearby}?lat=$latitude&lon=$longitude&radius=$radius',
