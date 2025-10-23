@@ -33,13 +33,13 @@ class Bus {
 class BusEta {
   final String busId;
   final double distanceMeters;
-  final double estimatedMinutes;
+  final EtaDuration duration;
   final DateTime lastReported;
 
   BusEta({
     required this.busId,
     required this.distanceMeters,
-    required this.estimatedMinutes,
+    required this.duration,
     required this.lastReported,
   });
 
@@ -47,8 +47,24 @@ class BusEta {
     return BusEta(
       busId: json['bus_id'].toString(),
       distanceMeters: json['distance_m'].toDouble(),
-      estimatedMinutes: json['estimated_arrival_minutes'].toDouble(),
+      duration: EtaDuration.fromJson(json['eta']),
       lastReported: DateTime.parse(json['last_reported']),
+    );
+  }
+}
+
+class EtaDuration {
+  final int hours;
+  final int minutes;
+  final int seconds;
+
+  EtaDuration({required this.hours, required this.minutes, required this.seconds});
+
+  factory EtaDuration.fromJson(Map<String, dynamic> json) {
+    return EtaDuration(
+      hours: json['hours'] ?? 0,
+      minutes: json['minutes'] ?? 0,
+      seconds: json['seconds'] ?? 0,
     );
   }
 }

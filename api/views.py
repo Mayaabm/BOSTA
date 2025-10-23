@@ -22,8 +22,16 @@ def compute_eta(bus_pos, target_point, avg_speed_m_per_s=10.0):
     # Since bus_pos.location is a geography field, .distance() returns meters.
     distance_m = bus_pos.location.distance(target_point)
     eta_seconds = distance_m / avg_speed_m_per_s
-    return round(eta_seconds / 60, 1)
-
+    
+    if distance_m <= 10: # If bus is very close, consider it arrived.
+        return 0
+        
+    # Return total minutes, ensuring it's at least a small fraction to avoid 0.
+    # This is useful for sorting or simple displays.
+    eta_minutes = max(0.1, eta_seconds / 60)
+    return round(eta_minutes, 1)
+    
+    
 @api_view(['GET'])
 def eta(request):
     """
@@ -52,12 +60,21 @@ def eta(request):
     # Use the bus's last reported speed, with a fallback.
     avg_speed_m_per_s = bus_pos.speed_mps if bus_pos.speed_mps and bus_pos.speed_mps > 0 else 10.0
     eta_seconds = distance_m / avg_speed_m_per_s
-    eta_minutes = round(eta_seconds / 60, 1)
-
+    
+    # Deconstruct total seconds into hours, minutes, and seconds for a richer response
+    if distance_m > 10:
+        m, s = divmod(eta_seconds, 60)
+        h, m = divmod(m, 60)
+        eta_structured = {"hours": int(h), "minutes": int(m), "seconds": int(s)}
+    else:
+        eta_structured = {"hours": 0, "minutes": 0, "seconds": 0}
+        
     data = {
         "bus_id": bus_id,
         "distance_m": round(distance_m, 1),
-        "estimated_arrival_minutes": eta_minutes,
+        # Keep the old field for backward compatibility if needed, but add the new one.
+        "estimated_arrival_minutes": round(eta_seconds / 60, 1) if distance_m > 10 else 0,
+        "eta": eta_structured,
         "last_reported": bus_pos.recorded_at,
     }
 
