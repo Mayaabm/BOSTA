@@ -1,13 +1,12 @@
 # api/models.py
 from django.contrib.gis.db import models  # this is key
 from django.contrib.auth.models import User
-from django.contrib.gis.db import models as gis_models
 
 
 class CustomUserProfile(models.Model):
     user = models.OneToOneField(User, on_delete=models.CASCADE, related_name="profile")
-    current_location = models.PointField(geography=True, srid=4326, null=True, blank=True)
-    destination = models.PointField(geography=True, srid=4326, null=True, blank=True)   
+    current_location = models.PointField(srid=4326, null=True, blank=True)
+    destination = models.PointField(srid=4326, null=True, blank=True)
     is_driver = models.BooleanField(default=False)
     is_commuter = models.BooleanField(default=True)
 
@@ -20,7 +19,7 @@ class Bus(models.Model):
     capacity = models.IntegerField()
     speed_mps = models.FloatField(default=0.0)  # Current speed in m/s
     driver = models.OneToOneField('CustomUserProfile', on_delete=models.SET_NULL, null=True, blank=True)
-    current_location = models.PointField(geography=True, srid=4326, null=True, blank=True)
+    current_location = models.PointField(srid=4326, null=True, blank=True)
     last_reported_at = models.DateTimeField(null=True, blank=True)
 
     def __str__(self):
@@ -28,37 +27,39 @@ class Bus(models.Model):
 
 
 class Route(models.Model):
-    name = models.CharField(max_length=100, unique=True)
-    description = models.TextField(blank=True)
-    geometry = models.LineStringField(geography=True, srid=4326, null=True, blank=True)
+    name = models.CharField(max_length=255, unique=True, help_text="Name of the bus route")
+    description = models.TextField(blank=True, help_text="A short description of the route")
+    geometry = models.LineStringField(srid=4326, help_text="The geographical path of the route")
+    operator = models.CharField(max_length=100, blank=True, null=True)
+    price = models.CharField(max_length=50, blank=True, null=True)
+    vehicle_type = models.CharField(max_length=100, blank=True, null=True)
 
     def __str__(self):
         return self.name
 
 
-class Location(models.Model):
-    point = models.PointField(srid=4326)
-    description = models.CharField(max_length=255, blank=True)
-    routes = models.ManyToManyField(Route, related_name="locations", blank=True)
+class Stop(models.Model):
+    route = models.ForeignKey(Route, related_name='stops', on_delete=models.CASCADE)
+    order = models.IntegerField(help_text="The order of the stop along the route")
+    location = models.PointField(srid=4326, help_text="The geographical location of the stop")
 
     class Meta:
-        unique_together = ('point',)
+        ordering = ['route', 'order']
 
     def __str__(self):
-        return self.description or f"Location {self.id}"
-
-
+        return f"Stop {self.order} on {self.route.name}"
 
 
 class Trip(models.Model):
     bus = models.ForeignKey(Bus, on_delete=models.CASCADE, related_name='trips')
     route = models.ForeignKey(Route, on_delete=models.CASCADE, related_name='trips')
     departure_time = models.DateTimeField()
-    current_location = models.ForeignKey(Location, on_delete=models.SET_NULL, null=True, blank=True)
+    current_stop = models.ForeignKey(Stop, on_delete=models.SET_NULL, null=True, blank=True)
     estimated_arrival_time = models.DateTimeField(null=True, blank=True)
 
     def __str__(self):
         return f"{self.bus} on {self.route} ({self.departure_time})"
+
 
 
 class VehiclePosition(models.Model):

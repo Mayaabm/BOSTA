@@ -7,8 +7,8 @@ from datetime import timedelta
 from django.contrib.gis.measure import D  
 from django.contrib.gis.db.models.functions import Distance
 from django.db.models import OuterRef, Subquery
-from django.db.models.functions import Coalesce
-from .serializers import BusNearbySerializer
+from django.db.models.functions import Coalesce, Cast
+from .serializers import BusNearbySerializer, RouteSerializer
 
 
 def compute_eta(bus_pos, target_point, avg_speed_m_per_s=10.0):
@@ -112,6 +112,15 @@ def buses_nearby(request):
     buses_with_route = active_buses.annotate(route_name=Coalesce(Subquery(latest_trip_subquery), None))
 
     serializer = BusNearbySerializer(buses_with_route, many=True)
+    return Response(serializer.data)
+
+@api_view(['GET'])
+def route_list(request):
+    """
+    Returns a list of all routes, including their geometry and stops.
+    """
+    routes = Route.objects.prefetch_related('stops').all()
+    serializer = RouteSerializer(routes, many=True)
     return Response(serializer.data)
 
 

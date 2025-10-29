@@ -4,12 +4,16 @@ import 'package:flutter_map/flutter_map.dart';
 import 'package:latlong2/latlong.dart';
 import 'package:geolocator/geolocator.dart';
 import '../services/bus_service.dart';
+import '../services/route_service.dart';
 import 'routing_service.dart';
 import 'transit_tokens.dart';
 import '../models/bus.dart';
+import '../models/route_model.dart';
+import '../models/stop_model.dart';
 import 'bus_simulation.dart';
 
-const _simulationMode = true; // Set to false to use live API data
+// Set to false to see your database routes. Set to true for the old animation.
+const _simulationMode = false; 
 
 class MapScreen extends StatefulWidget {
   const MapScreen({super.key});
@@ -23,6 +27,8 @@ class _MapScreenState extends State<MapScreen> with TickerProviderStateMixin {
   Position? _currentPosition;
   List<Bus> _nearbyBuses = [];
   Bus? _selectedBus;
+  List<AppRoute> _dbRoutes = []; // To store routes from the database
+  AppStop? _selectedStop;
   Timer? _busUpdateTimer;
   StreamSubscription<Position>? _positionStream;
 
@@ -38,10 +44,12 @@ class _MapScreenState extends State<MapScreen> with TickerProviderStateMixin {
     super.initState();
     _getCurrentLocation();
 
-    if (_simulationMode) {
+    if (_simulationMode) { // Old simulation
       _setupSimulation();
     } else {
-      _startPeriodicUpdates(); // Use live data
+      // Fetch database routes and live bus data
+      _fetchDatabaseRoutes();
+      _startPeriodicUpdates();
     }
   }
 
@@ -61,6 +69,30 @@ class _MapScreenState extends State<MapScreen> with TickerProviderStateMixin {
     if (_routePoints.isNotEmpty) {
       mapController.fitCamera(
           CameraFit.coordinates(coordinates: _routePoints, padding: const EdgeInsets.all(50)));
+    }
+  }
+
+  Future<void> _fetchDatabaseRoutes() async {
+    try {
+      final routes = await RouteService.getRoutes();
+      if (mounted) {
+        debugPrint('Successfully fetched ${routes.length} routes from the database.');
+        setState(() => _dbRoutes = routes);
+        _centerOnAllDbRoutes(); // Center the map on the new routes
+      }
+    } catch (e) {
+      debugPrint('Error fetching database routes: $e');
+    }
+  }
+
+  void _centerOnAllDbRoutes() {
+    if (_dbRoutes.isEmpty) return;
+
+    // Create a bounding box that contains all points from all routes
+    final allPoints = _dbRoutes.expand((route) => route.geometry).toList();
+    if (allPoints.isNotEmpty) {
+      var bounds = LatLngBounds.fromPoints(allPoints);
+      mapController.fitCamera(CameraFit.bounds(bounds: bounds, padding: const EdgeInsets.all(40.0)));
     }
   }
 
@@ -260,10 +292,13 @@ class _MapScreenState extends State<MapScreen> with TickerProviderStateMixin {
                 setState(() => _selectedBus = null);
               },
               onMapReady: () {
-                // Move map to current location only after it's ready.
+                // When the map is ready, center it on the user's location if in live mode,
+                // otherwise, if routes are already loaded, center on them.
                 if (!_simulationMode && _currentPosition != null) {
                   mapController.move(LatLng(_currentPosition!.latitude, _currentPosition!.longitude), 13);
-                } 
+                } else if (_dbRoutes.isNotEmpty) {
+                  _centerOnAllDbRoutes();
+                }
               },
             ),
             children: [
@@ -278,6 +313,49 @@ class _MapScreenState extends State<MapScreen> with TickerProviderStateMixin {
                         points: _routePoints,
                         color: transitTokens.routePrimary ?? Colors.deepPurple,
                         strokeWidth: 5),
+                  ],
+                ),
+              // Layer for Database Routes
+              if (_dbRoutes.isNotEmpty)
+                PolylineLayer(
+                  polylines: _dbRoutes.map((route) {
+                    return Polyline(
+                      points: route.geometry,
+                      color: Colors.blue.withOpacity(0.8),
+                      strokeWidth: 4,
+                    );
+                  }).toList(),
+                ),
+              // Layer for Database Stops
+              if (_dbRoutes.isNotEmpty)
+                MarkerLayer(markers: [
+                  ..._dbRoutes.expand((route) => route.stops).map((stop) {
+                    final routeOfStop = _dbRoutes.firstWhere((r) => r.stops.contains(stop));
+                    return Marker(
+                        point: stop.location,
+                        width: 24,
+                        height: 24,
+                        child: GestureDetector(
+                          onTap: () {
+                            setState(() => _selectedStop = stop);
+                            ScaffoldMessenger.of(context).showSnackBar(
+                              SnackBar(
+                                content: Text('Route: ${routeOfStop.name} - Stop #${stop.order}'),
+                                duration: const Duration(seconds: 3),
+                                behavior: SnackBarBehavior.floating,
+                              ),
+                            );
+                          },
+                          child: Container(
+                            decoration: BoxDecoration(
+                              color: Colors.white.withOpacity(0.8),
+                              shape: BoxShape.circle,
+                              border: Border.all(color: Colors.black54, width: 1.5)
+                            ),
+                            child: Icon(Icons.directions_bus, color: Colors.blue[800], size: 16),
+                          ),
+                        ));
+                  }).toList()
             ]),
               MarkerLayer(
                 markers: [

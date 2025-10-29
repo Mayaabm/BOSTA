@@ -1,6 +1,6 @@
 from django.core.management.base import BaseCommand
 from django.contrib.gis.geos import Point, LineString
-from api.models import Route, Location, Bus, VehiclePosition, Trip
+from api.models import Route, Stop, Bus, VehiclePosition, Trip
 from datetime import datetime, timedelta
 import random
 
@@ -15,7 +15,7 @@ class Command(BaseCommand):
         VehiclePosition.objects.all().delete()
         Trip.objects.all().delete()
         Bus.objects.all().delete()
-        Location.objects.all().delete()
+        Stop.objects.all().delete()
         Route.objects.all().delete()
 
         # Two test areas (Batroun + Beirut)
@@ -39,11 +39,11 @@ class Command(BaseCommand):
                     lon = area["lon"] + (i * 0.003) + (route_idx * 0.002)
                     lat = area["lat"] + (i * 0.002) - (route_idx * 0.001)
                     point = Point(lon, lat, srid=4326)
-                    location, _ = Location.objects.get_or_create(
-                        point=point,
-                        defaults={"description": f"Stop {i+1} on {route.name}"}
+                    Stop.objects.create(
+                        route=route,
+                        order=i + 1,
+                        location=point,
                     )
-                    location.routes.add(route)
                     points.append(point)
 
                 # Save the route geometry
@@ -64,7 +64,7 @@ class Command(BaseCommand):
                     bus=bus,
                     route=route,
                     departure_time=datetime.now() - timedelta(minutes=10),
-                    current_location=None,
+                    current_stop=None,
                     estimated_arrival_time=datetime.now() + timedelta(minutes=30)
                 )
 

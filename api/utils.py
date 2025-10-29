@@ -1,7 +1,7 @@
 # api/utils.py
 import math
 from typing import List, Tuple, Optional
-from .models import Location, Route, Bus
+from .models import Stop, Route, Bus
 
 EARTH_R_KM = 6371.0
 
@@ -22,7 +22,7 @@ def compute_cumulative_km(route: Route):
         s.save(update_fields=['cum_km'])
         prev = s
 
-def nearest_stop(route: Route, lat: float, lon: float) -> Tuple[Location, float]:
+def nearest_stop(route: Route, lat: float, lon: float) -> Tuple[Stop, float]:
     best = None; best_d = 1e9
     for s in route.stops.all():
         d = haversine(lat, lon, s.latitude, s.longitude)
@@ -35,7 +35,7 @@ def eta_minutes(distance_km: float, kmh: Optional[float]) -> int:
     minutes = (distance_km / speed) * 60.0
     return max(1, int(round(minutes)))
 
-def segment_km_between(route: Route, a: Location, b: Location) -> float:
+def segment_km_between(route: Route, a: Stop, b: Stop) -> float:
     # assumes forward direction (a.order <= b.order). If reversed, swap.
     if a.order > b.order:
         a, b = b, a
