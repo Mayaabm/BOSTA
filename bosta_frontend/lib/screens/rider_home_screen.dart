@@ -15,14 +15,14 @@ import 'bus_simulation.dart';
 // Set to false to see your database routes. Set to true for the old animation.
 const _simulationMode = false; 
 
-class MapScreen extends StatefulWidget {
-  const MapScreen({super.key});
+class RiderHomeScreen extends StatefulWidget {
+  const RiderHomeScreen({super.key});
 
   @override
-  State<MapScreen> createState() => _MapScreenState();
+  State<RiderHomeScreen> createState() => _RiderHomeScreenState();
 }
 
-class _MapScreenState extends State<MapScreen> with TickerProviderStateMixin {
+class _RiderHomeScreenState extends State<RiderHomeScreen> with TickerProviderStateMixin {
   final mapController = MapController();
   Position? _currentPosition;
   List<Bus> _nearbyBuses = [];

@@ -1,0 +1,47 @@
+import 'package:flutter/material.dart';
+import 'package:go_router/go_router.dart';
+import '../screens/auth_screen.dart';
+import '../screens/driver_dashboard_screen.dart';
+import '../screens/rider_home_screen.dart';
+import 'auth_service.dart';
+
+class AppRouter {
+  final AuthService authService;
+
+  AppRouter(this.authService);
+
+  late final GoRouter router = GoRouter(
+    refreshListenable: authService,
+    initialLocation: '/rider/home',
+    routes: [
+      GoRoute(
+        path: '/auth',
+        builder: (context, state) => const AuthScreen(),
+      ),
+      GoRoute(
+        path: '/rider/home',
+        builder: (context, state) => const RiderHomeScreen(),
+      ),
+      GoRoute(
+        path: '/driver/dashboard',
+        builder: (context, state) => const DriverDashboardScreen(),
+      ),
+    ],
+    redirect: (BuildContext context, GoRouterState state) {
+      final authState = authService.currentState;
+      final bool onAuthRoute = state.matchedLocation == '/auth';
+
+      if (!authState.isAuthenticated) {
+        return onAuthRoute ? null : '/auth';
+      }
+
+      if (authState.isAuthenticated && onAuthRoute) {
+        return authState.role == UserRole.driver
+            ? '/driver/dashboard'
+            : '/rider/home';
+      }
+
+      return null;
+    },
+  );
+}
