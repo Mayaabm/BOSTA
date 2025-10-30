@@ -42,13 +42,11 @@ class _RiderHomeScreenState extends State<RiderHomeScreen> with TickerProviderSt
   @override
   void initState() {
     super.initState();
-    _getCurrentLocation();
-
-    if (_simulationMode) { // Old simulation
+    // We will now call data fetching methods from onMapReady.
+    if (_simulationMode) {
       _setupSimulation();
     } else {
-      // Fetch database routes and live bus data
-      _fetchDatabaseRoutes();
+      // Start periodic updates, but initial fetch will be in onMapReady.
       _startPeriodicUpdates();
     }
   }
@@ -85,12 +83,25 @@ class _RiderHomeScreenState extends State<RiderHomeScreen> with TickerProviderSt
     }
   }
 
-  void _centerOnAllDbRoutes() {
+  Future<void> _centerOnAllDbRoutes() async {
     if (_dbRoutes.isEmpty) return;
 
     // Create a bounding box that contains all points from all routes
     final allPoints = _dbRoutes.expand((route) => route.geometry).toList();
     if (allPoints.isNotEmpty) {
+      final permission = await Geolocator.checkPermission();
+      if (permission == LocationPermission.denied) {
+        await Geolocator.requestPermission();
+      }
+
+      final position = await Geolocator.getCurrentPosition();
+      if (mounted) {
+        setState(() => _currentPosition = position);
+        if (!_simulationMode) {
+          // Center map on user's location once we have it.
+          mapController.move(LatLng(position.latitude, position.longitude), 13.0);
+        }
+      }
       var bounds = LatLngBounds.fromPoints(allPoints);
       mapController.fitCamera(CameraFit.bounds(bounds: bounds, padding: const EdgeInsets.all(40.0)));
     }
@@ -104,18 +115,21 @@ class _RiderHomeScreenState extends State<RiderHomeScreen> with TickerProviderSt
       }
 
       final position = await Geolocator.getCurrentPosition();
-      if (mounted) {
-        setState(() => _currentPosition = position);
-        if (!_simulationMode) {
-          _updateNearbyBuses(); // Initial bus fetch for live mode
-          mapController.move(LatLng(position.latitude, position.longitude), 13);
-        }
-      }
 
       // Start listening for continuous location updates
       _startListeningToLocation();
     } catch (e) {
       debugPrint('Error getting location: $e');
+    }
+  }
+
+  Future<void> _initMap() async {
+    await _getCurrentLocation();
+    if (mounted && _currentPosition != null) {
+      setState(() {}); // Ensure UI updates with current position
+      mapController.move(LatLng(_currentPosition!.latitude, _currentPosition!.longitude), 13);
+      _updateNearbyBuses(); // Initial bus fetch
+      _fetchDatabaseRoutes(); // Fetch routes and center map
     }
   }
 
@@ -282,115 +296,137 @@ class _RiderHomeScreenState extends State<RiderHomeScreen> with TickerProviderSt
     final transitTokens = Theme.of(context).extension<TransitTokens>()!;
     final colorScheme = Theme.of(context).colorScheme;
     return Scaffold(
-      body: Stack(
-        children: [          _currentPosition == null && !_simulationMode              ? const Center(child: CircularProgressIndicator())              : FlutterMap(
-            mapController: mapController,
-            options: MapOptions(
-              initialCenter: _simulationMode ? _startPoint : LatLng(_currentPosition!.latitude, _currentPosition!.longitude),
-              initialZoom: 13,
-              onTap: (_, _) {
-                setState(() => _selectedBus = null);
-              },
-              onMapReady: () {
-                // When the map is ready, center it on the user's location if in live mode,
-                // otherwise, if routes are already loaded, center on them.
-                if (!_simulationMode && _currentPosition != null) {
-                  mapController.move(LatLng(_currentPosition!.latitude, _currentPosition!.longitude), 13);
-                } else if (_dbRoutes.isNotEmpty) {
-                  _centerOnAllDbRoutes();
-                }
-              },
-            ),
-            children: [
-              TileLayer(
-                urlTemplate: 'https://tile.openstreetmap.org/{z}/{x}/{y}.png',
-                userAgentPackageName: 'com.example.bosta_frontend',
-              ),
-              if (_routePoints.isNotEmpty)
-                PolylineLayer(
-                  polylines: [
-                    Polyline(
-                        points: _routePoints, // This is for the simulation route
-                        color: transitTokens.routePrimary ?? Colors.deepPurple,
-                        strokeWidth: 5),
+      body: _currentPosition == null && !_simulationMode
+          ? const Center(child: CircularProgressIndicator())
+          : Stack(
+              children: [
+                FlutterMap(
+                  mapController: mapController,
+                  options: MapOptions(
+                    initialCenter: _simulationMode
+                        ? _startPoint
+                        : LatLng(_currentPosition!.latitude,
+                            _currentPosition!.longitude),
+                    initialZoom: 13,
+                    onTap: (_, _) {
+                      setState(() => _selectedBus = null);
+                    },
+                    onMapReady: () {
+                      // Now that the map is ready, we can fetch data and control it.
+                      if (!_simulationMode) {
+                        _initMap();
+                      }
+                    },
+                  ),
+                  children: [
+                    TileLayer(
+                      urlTemplate:
+                          'https://tile.openstreetmap.org/{z}/{x}/{y}.png',
+                      userAgentPackageName: 'com.example.bosta_frontend',
+                    ),
+                    if (_routePoints.isNotEmpty)
+                      PolylineLayer(
+                        polylines: [
+                          Polyline(
+                              points:
+                                  _routePoints, // This is for the simulation route
+                              color: transitTokens.routePrimary ??
+                                  Colors.deepPurple,
+                              strokeWidth: 5),
+                        ],
+                      ),
+                    // Layer for Database Routes
+                    if (_dbRoutes.isNotEmpty)
+                      PolylineLayer(
+                        polylines: _dbRoutes.map((route) {
+                          return Polyline(
+                            points: route.geometry,
+                            color: (transitTokens.routePrimary ?? Colors.blue)
+                                .withOpacity(0.8),
+                            strokeWidth: 4,
+                          );
+                        }).toList(),
+                      ),
+                    // Layer for Database Stops
+                    if (_dbRoutes.isNotEmpty)
+                      MarkerLayer(markers: [
+                        ..._dbRoutes.expand((route) => route.stops).map((stop) {
+                          final routeOfStop = _dbRoutes
+                              .firstWhere((r) => r.stops.contains(stop));
+                          return Marker(
+                              point: stop.location,
+                              width: 24,
+                              height: 24,
+                              child: GestureDetector(
+                                onTap: () {
+                                  setState(() => _selectedStop = stop);
+                                  ScaffoldMessenger.of(context).showSnackBar(
+                                    SnackBar(
+                                      content: Text(
+                                          'Route: ${routeOfStop.name} - Stop #${stop.order}'),
+                                      duration: const Duration(seconds: 3),
+                                      behavior: SnackBarBehavior.floating,
+                                    ),
+                                  );
+                                },
+                                child: Container(
+                                  decoration: BoxDecoration(
+                                      color: Colors.white.withOpacity(0.8),
+                                      shape: BoxShape.circle,
+                                      border: Border.all(
+                                          color: Colors.black54, width: 1.5)),
+                                  child: Icon(Icons.directions_bus,
+                                      color: Colors.blue[800], size: 16),
+                                ),
+                              ));
+                        })
+                      ]),
+                    MarkerLayer(
+                      markers: [
+                        if (_currentPosition != null)
+                          Marker(
+                            point: LatLng(
+                              _currentPosition!.latitude,
+                              _currentPosition!.longitude,
+                            ),
+                            width: 30,
+                            height: 30,
+                            child: Icon(Icons.my_location,
+                                color: colorScheme.primary, size: 30),
+                          ),
+
+                        // Show live buses OR simulated buses
+                        if (!_simulationMode)
+                          ..._buildLiveBusMarkers(transitTokens),
+                        if (_simulationMode)
+                          ..._buildSimulatedBusMarkers(colorScheme),
+
+                        // Markers for start and destination
+                        if (_routePoints.isNotEmpty) ...[
+                          Marker(
+                            point: _startPoint,
+                            width: 80,
+                            height: 50,
+                            child: Column(children: [
+                              Icon(Icons.flag,
+                                  color: transitTokens.etaPositive),
+                              const Text("Start")
+                            ]),
+                          ),
+                          Marker(
+                            point: _destinationPoint,
+                            width: 80,
+                            height: 50,
+                            child: Column(children: [
+                              Icon(Icons.flag, color: colorScheme.error),
+                              const Text("End")
+                            ]),
+                          ),
+                        ]
+                      ],
+                    ),
                   ],
                 ),
-              // Layer for Database Routes
-              if (_dbRoutes.isNotEmpty)
-                PolylineLayer(
-                  polylines: _dbRoutes.map((route) {
-                    return Polyline(
-                      points: route.geometry,
-                      color: (transitTokens.routePrimary ?? Colors.blue).withOpacity(0.8),
-                      strokeWidth: 4,
-                    );
-                  }).toList(),
-                ),
-              // Layer for Database Stops
-              if (_dbRoutes.isNotEmpty)
-                MarkerLayer(markers: [
-                  ..._dbRoutes.expand((route) => route.stops).map((stop) {
-                    final routeOfStop = _dbRoutes.firstWhere((r) => r.stops.contains(stop));
-                    return Marker(
-                        point: stop.location,
-                        width: 24,
-                        height: 24,
-                        child: GestureDetector(
-                          onTap: () {
-                            setState(() => _selectedStop = stop);
-                            ScaffoldMessenger.of(context).showSnackBar(
-                              SnackBar(
-                                content: Text('Route: ${routeOfStop.name} - Stop #${stop.order}'),
-                                duration: const Duration(seconds: 3),
-                                behavior: SnackBarBehavior.floating,
-                              ),
-                            );
-                          },
-                          child: Container(
-                            decoration: BoxDecoration(
-                              color: Colors.white.withOpacity(0.8),
-                              shape: BoxShape.circle,
-                              border: Border.all(color: Colors.black54, width: 1.5)
-                            ),
-                            child: Icon(Icons.directions_bus, color: Colors.blue[800], size: 16),
-                          ),
-                        ));
-                  })
-            ]),
-              MarkerLayer(
-                markers: [
-                  if (_currentPosition != null)
-                    Marker(
-                      point: LatLng(
-                        _currentPosition!.latitude,
-                        _currentPosition!.longitude,
-                      ),
-                      width: 30,
-                      height: 30,                      
-                      child: Icon(Icons.my_location, color: colorScheme.primary, size: 30),
-                    ),
-
-                  // Show live buses OR simulated buses
-                  if (!_simulationMode) ..._buildLiveBusMarkers(transitTokens),
-                  if (_simulationMode) ..._buildSimulatedBusMarkers(colorScheme),
-
-                  // Markers for start and destination
-                  if (_routePoints.isNotEmpty) ...[
-                    Marker(
-                      point: _startPoint,
-                      width: 80, height: 50,
-                      child: Column(children: [Icon(Icons.flag, color: transitTokens.etaPositive), const Text("Start")]),
-                    ),
-                    Marker(
-                      point: _destinationPoint,
-                      width: 80, height: 50,
-                      child: Column(children: [Icon(Icons.flag, color: colorScheme.error), const Text("End")]),
-                    ),
-                  ]
-                ],
-              ),
-            ],
-          ),
           // Bus info card for LIVE bus
           if (!_simulationMode && _selectedBus != null)
             _buildLiveBusInfoCard(_selectedBus!, transitTokens),
