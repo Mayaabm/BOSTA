@@ -38,6 +38,12 @@ class AppRouter {
           return authState.role == UserRole.driver ? '/driver/dashboard' : '/rider/home';
         }
 
+        // If the user is authenticated but on a route that doesn't match their role, redirect them.
+        if (authState.isAuthenticated) {
+          if (authState.role == UserRole.driver && state.matchedLocation != '/driver/dashboard') return '/driver/dashboard';
+          if (authState.role == UserRole.rider && state.matchedLocation != '/rider/home') return '/rider/home';
+        }
+
         return null;
       },
     );

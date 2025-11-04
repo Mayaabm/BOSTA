@@ -13,7 +13,7 @@ class AuthState {
 /// A mock authentication service to simulate user login and role management.
 /// In a real app, this would interact with your backend API and secure storage.
 class AuthService extends ChangeNotifier {
-  AuthState _state = AuthState(isAuthenticated: true, role: UserRole.rider); // Default to logged-in rider for now
+  AuthState _state = AuthState(); // Default to logged-out
 
   AuthState get currentState => _state;
 
