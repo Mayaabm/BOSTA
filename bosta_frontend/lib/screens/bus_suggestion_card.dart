@@ -6,6 +6,7 @@ import 'package:flutter/material.dart';
 import 'package:google_fonts/google_fonts.dart';
 
 import '../../../../models/bus.dart';
+import 'bus_details_modal.dart';
 
 class BusSuggestionCard extends StatelessWidget {
   final Bus bus;
@@ -72,9 +73,16 @@ class BusSuggestionCard extends StatelessWidget {
               children: [
                 OutlinedButton(
                   onPressed: () {
-                    // Placeholder for "More Details" modal
-                    ScaffoldMessenger.of(context).showSnackBar(
-                      const SnackBar(content: Text("Details modal coming soon!")),
+                    showModalBottomSheet(
+                      context: context,
+                      isScrollControlled: true,
+                      backgroundColor: Colors.transparent,
+                      builder: (context) {
+                        return BusDetailsModal(
+                          busId: bus.id,
+                          onChooseBus: onChooseBus,
+                        );
+                      },
                     );
                   },
                   style: OutlinedButton.styleFrom(

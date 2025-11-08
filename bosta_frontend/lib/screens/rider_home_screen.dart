@@ -1,135 +1,93 @@
 import 'dart:async';
+import 'package:flutter/cupertino.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_map/flutter_map.dart';
-import 'package:latlong2/latlong.dart';
 import 'package:geolocator/geolocator.dart';
-import '../services/bus_service.dart';
-import '../services/route_service.dart';
-import 'routing_service.dart';
-import 'transit_tokens.dart';
-import '../models/bus.dart';
-import '../models/route_model.dart';
-import '../models/stop_model.dart';
-import 'bus_simulation.dart';
+import 'package:google_fonts/google_fonts.dart';
+import 'package:latlong2/latlong.dart';
+import 'package:sliding_up_panel/sliding_up_panel.dart';
 
-// Set to false to see your database routes. Set to true for the old animation.
-const _simulationMode = false; 
+import '../models/bus.dart'; // Using the actual model
+import '../models/route_model.dart'; // Using the actual model
+import '../services/bus_service.dart'; // Using the actual service
+import '../services/route_service.dart'; // Using the actual service
+import 'bus_bottom_sheet.dart';
+import 'dual_search_bar.dart';
+
+enum RiderView { planTrip, nearbyBuses }
 
 class RiderHomeScreen extends StatefulWidget {
   const RiderHomeScreen({super.key});
 
   @override
-  State<RiderHomeScreen> createState() => _RiderHomeScreenState();
+  State<RiderHomeScreen> createState() => _RiderHomeScreenState(); // No longer nested
 }
 
 class _RiderHomeScreenState extends State<RiderHomeScreen> with TickerProviderStateMixin {
-  final mapController = MapController();
+  final MapController mapController = MapController();
+  final PanelController _panelController = PanelController();
   Position? _currentPosition;
-  List<Bus> _nearbyBuses = [];
-  Bus? _selectedBus;
-  List<AppRoute> _dbRoutes = []; // To store routes from the database
-  AppStop? _selectedStop;
-  Timer? _busUpdateTimer;
   StreamSubscription<Position>? _positionStream;
+  Timer? _busUpdateTimer;
 
-  // --- Simulation and Routing State ---
-  final List<BusSimulation> _simulatedBuses = [];
-  List<LatLng> _routePoints = [];
-  final LatLng _startPoint = const LatLng(34.1292207, 35.6860806);
-  final LatLng _destinationPoint = const LatLng(34.147900, 35.643100);
-  static const _busIconSize = 30.0;
+  // State for Route 224
+  static const String _targetRouteId = '224';
+  AppRoute? _route224;
+  List<Bus> _busesOnRoute = [];
+  bool _isNearRoute = false;
+
+  RiderView _currentView = RiderView.planTrip;
+  List<Bus> _suggestedBuses = []; // For trip planning
+  Bus? _selectedBus;
+
+  // Animation for bus markers
+  late final AnimationController _pulseController; // For bus marker pulse animation
 
   @override
   void initState() {
     super.initState();
-    // We will now call data fetching methods from onMapReady.
-    if (_simulationMode) {
-      _setupSimulation();
-    } else {
-      // Start periodic updates, but initial fetch will be in onMapReady.
-      _startPeriodicUpdates();
-    }
+    _pulseController = AnimationController(
+      vsync: this,
+      duration: const Duration(seconds: 1),
+    )..repeat(reverse: true);
+
+    _initLocationAndRoute();
   }
 
   @override
   void dispose() {
-    _busUpdateTimer?.cancel();
     _positionStream?.cancel();
-    for (var sim in _simulatedBuses) {
-      sim.dispose();
-    }
+    _busUpdateTimer?.cancel();
+    _pulseController.dispose();
     super.dispose();
   }
 
   // --- Location and Data Fetching ---
 
-  void _centerOnRoute() {
-    if (_routePoints.isNotEmpty) {
-      mapController.fitCamera(
-          CameraFit.coordinates(coordinates: _routePoints, padding: const EdgeInsets.all(50)));
-    }
-  }
-
-  Future<void> _fetchDatabaseRoutes() async {
+  Future<void> _initLocationAndRoute() async {
     try {
-      final routes = await RouteService.getRoutes();
+      // 1. Fetch the static route data first
+      final route = await RouteService.getRouteById(_targetRouteId);
       if (mounted) {
-        debugPrint('Successfully fetched ${routes.length} routes from the database.');
-        setState(() => _dbRoutes = routes);
-        _centerOnAllDbRoutes(); // Center the map on the new routes
-      }
-    } catch (e) {
-      debugPrint('Error fetching database routes: $e');
-    }
-  }
-
-  Future<void> _centerOnAllDbRoutes() async {
-    if (_dbRoutes.isEmpty) return;
-
-    // Create a bounding box that contains all points from all routes
-    final allPoints = _dbRoutes.expand((route) => route.geometry).toList();
-    if (allPoints.isNotEmpty) {
-      final permission = await Geolocator.checkPermission();
-      if (permission == LocationPermission.denied) {
-        await Geolocator.requestPermission();
+        setState(() => _route224 = route);
       }
 
+      // 2. Get user's location
+      await Geolocator.requestPermission();
       final position = await Geolocator.getCurrentPosition();
       if (mounted) {
         setState(() => _currentPosition = position);
-        if (!_simulationMode) {
-          // Center map on user's location once we have it.
-          mapController.move(LatLng(position.latitude, position.longitude), 13.0);
-        }
+        mapController.move(LatLng(position.latitude, position.longitude), 14.0);
+        _startListeningToLocation(); // This will trigger the proximity check
+        _startPeriodicBusUpdates();
       }
-      var bounds = LatLngBounds.fromPoints(allPoints);
-      mapController.fitCamera(CameraFit.bounds(bounds: bounds, padding: const EdgeInsets.all(40.0)));
-    }
-  }
-
-  Future<void> _getCurrentLocation() async {
-    try {
-      final permission = await Geolocator.checkPermission();
-      if (permission == LocationPermission.denied) {
-        await Geolocator.requestPermission();
-      }
-
-      final position = await Geolocator.getCurrentPosition();
-
-      // Start listening for continuous location updates
-      _startListeningToLocation();
     } catch (e) {
-      debugPrint('Error getting location: $e');
-    }
-  }
-
-  Future<void> _initMap() async {
-    await _getCurrentLocation();
-    if (mounted && _currentPosition != null) {
-      setState(() {}); // Ensure UI updates with current position
-      mapController.move(LatLng(_currentPosition!.latitude, _currentPosition!.longitude), 13);
-      _updateNearbyBuses(); // Initial bus fetch
-      _fetchDatabaseRoutes(); // Fetch routes and center map
+      debugPrint("Error during initialization: $e");
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(content: Text("Could not initialize map. Please try again.")),
+        );
+      }
     }
   }
 
@@ -138,426 +96,342 @@ class _RiderHomeScreenState extends State<RiderHomeScreen> with TickerProviderSt
     _positionStream = Geolocator.getPositionStream().listen((Position position) {
       if (mounted) {
         setState(() => _currentPosition = position);
+        _checkProximityToRoute();
       }
     });
   }
 
-  void _startPeriodicUpdates() {
+  void _checkProximityToRoute() {
+    if (_currentPosition == null || _route224 == null) return;
+
+    final userPoint = LatLng(_currentPosition!.latitude, _currentPosition!.longitude);
+    bool isCurrentlyNear = false;
+
+    // Check if user is within 300m of any point on the route polyline
+    for (final routePoint in _route224!.geometry) {
+      final distance = const Distance().as(LengthUnit.Meter, userPoint, routePoint);
+      if (distance <= 300) {
+        isCurrentlyNear = true;
+        break;
+      }
+    }
+
+    if (isCurrentlyNear != _isNearRoute) {
+      setState(() {
+        _isNearRoute = isCurrentlyNear;
+        if (!_isNearRoute) {
+          _busesOnRoute.clear(); // Hide buses when user moves away
+          _selectedBus = null; // Deselect bus
+        } else {
+          _fetchBusesForRoute(); // Fetch buses when user is near
+        }
+      });
+    }
+  }
+
+  void _startPeriodicBusUpdates() {
     _busUpdateTimer = Timer.periodic(
-      const Duration(seconds: 5),
-      (_) => _updateNearbyBuses(),
+      const Duration(seconds: 10),
+      (_) {
+        if (_isNearRoute) {
+          _fetchBusesForRoute();
+        }
+      },
     );
   }
 
-  Future<void> _updateNearbyBuses() async {
-    if (_currentPosition == null) return;
-
+  Future<void> _fetchBusesForRoute() async {
     try {
-      final buses = await BusService.getNearbyBuses(
-        latitude: _currentPosition!.latitude,
-        longitude: _currentPosition!.longitude,
-      );
-      setState(() => _nearbyBuses = buses);
-    } catch (e) {
-      debugPrint('Error updating buses: $e');
-    }
-  }
-
-  // --- ETA Logic ---
-
-  Future<void> _checkEta() async {
-    if (_selectedBus == null || _currentPosition == null) return;
-
-    try {
-      final eta = await BusService.getEta(
-        busId: _selectedBus!.id,
-        targetLat: _currentPosition!.latitude,
-        targetLon: _currentPosition!.longitude,
-      );
-
-      // Helper to format the duration into a readable string
-      String formatEta(EtaDuration duration) {
-        if (duration.hours > 0) {
-          return '${duration.hours}h ${duration.minutes}m';
-        }
-        if (duration.minutes > 0) {
-          return '${duration.minutes}m ${duration.seconds}s';
-        }
-        if (duration.seconds > 0) {
-          return '${duration.seconds} seconds';
-        }
-        return 'Arriving now';
-      }
-
+      final buses = await BusService.getBusesForRoute(_targetRouteId);
       if (mounted) {
-        showDialog(
-          context: context,
-          builder: (context) => AlertDialog(
-            title: Text('ETA for Bus ${_selectedBus!.plateNumber}'),
-            content: Text('Estimated arrival: ${formatEta(eta.duration)}'),
-            actions: [
-              TextButton(onPressed: () => Navigator.of(context).pop(), child: const Text('OK')),
-            ],
-          ),
-        );
+        setState(() => _busesOnRoute = buses);
       }
     } catch (e) {
-      debugPrint('Error getting ETA: $e');
+      debugPrint("Error fetching buses for route $_targetRouteId: $e");
     }
   }
 
-  // --- Simulation Logic ---
-
-  Future<void> _setupSimulation() async {
-    // 1. Fetch the route from OSRM
-    final route = await RoutingService.getRoute(_startPoint, _destinationPoint);
-    if (route.isEmpty || !mounted) return;
-
-    setState(() {
-      _routePoints = route;
-    });
-
-    _centerOnRoute();
-
-    // 2. Create and start simulated buses
-    _startBusSimulations(3);
-  }
-
-  void _startBusSimulations(int count) {
-    // Clear previous simulations
-    for (var sim in _simulatedBuses) {
-      sim.dispose();
-    }
-    _simulatedBuses.clear();
-
-    for (int i = 0; i < count; i++) {
-      final busId = 'SIM-${i + 1}';
-      final speedKph = 40.0 + (i * 10); // e.g., 40, 50, 60 km/h
-      final totalDistance = _calculateRouteDistance(_routePoints);
-      final durationSeconds = (totalDistance / (speedKph / 3.6)).round();
-
-      final controller = AnimationController(
-        vsync: this,
-        duration: Duration(seconds: durationSeconds),
+  void _onBusMarkerTapped(Bus bus) {
+    setState(() => _selectedBus = bus);
+    if (_route224 != null) {
+      mapController.fitCamera(
+        CameraFit.coordinates(
+          coordinates: _route224!.geometry,
+          padding: const EdgeInsets.all(50),
+        ),
       );
-
-      final animation = Tween<double>(begin: 0.0, end: 1.0).animate(controller)
-        ..addListener(() {
-          // Update ETA dynamically during animation
-          final remainingDistance = totalDistance * (1.0 - controller.value);          
-          final remainingSeconds = (remainingDistance / (speedKph / 3.6));
-          final sim = _simulatedBuses.firstWhere((s) => s.id == busId);
-          sim.etaNotifier.value = _formatDuration(Duration(seconds: remainingSeconds.round()));
-          setState(() {}); // Redraw marker on screen
-        });
-
-      final animatedPosition = _createPathAnimation(animation, _routePoints);
-
-      // Stagger the start times
-      Future.delayed(Duration(seconds: i * 10), () {
-        if (mounted) controller.repeat();
-      });
-
-      _simulatedBuses.add(BusSimulation(
-        id: busId,
-        plateNumber: 'SIM-${101 + i}',
-        controller: controller,
-        animation: animatedPosition,
-        route: _routePoints,
-        speedKph: speedKph,
-      ));
     }
-    setState(() {});
-  }
-
-  Animation<LatLng> _createPathAnimation(Animation<double> parent, List<LatLng> points) {
-    return TweenSequence<LatLng>(
-      List.generate(points.length - 1, (i) {
-        return TweenSequenceItem(
-          tween: LatLngTween(begin: points[i], end: points[i + 1]),
-          weight: const Distance().distance(points[i], points[i + 1]),
-        );
-      }),
-    ).animate(parent);
-  }
-
-  double _calculateRouteDistance(List<LatLng> points) {
-    double totalDistance = 0;
-    for (int i = 0; i < points.length - 1; i++) {
-      totalDistance += const Distance().as(LengthUnit.Meter, points[i], points[i + 1]);
-    }
-    return totalDistance;
   }
 
   // --- UI Build Method ---
   @override
   Widget build(BuildContext context) {
     // Access the theme extensions and color scheme
-    final transitTokens = Theme.of(context).extension<TransitTokens>()!;
     final colorScheme = Theme.of(context).colorScheme;
+    final LatLng initialCenter = _currentPosition != null
+        ? LatLng(_currentPosition!.latitude, _currentPosition!.longitude)
+        : const LatLng(34.1216, 35.6489); // Fallback to Jbeil
+
     return Scaffold(
-      body: _currentPosition == null && !_simulationMode
-          ? const Center(child: CircularProgressIndicator())
-          : Stack(
+      backgroundColor: const Color(0xFF12161A),
+      body: SlidingUpPanel(
+        controller: _panelController,
+        minHeight: 200,
+        maxHeight: MediaQuery.of(context).size.height * 0.8,
+        parallaxEnabled: true,
+        parallaxOffset: 0.5,
+        color: Colors.transparent,
+        panelBuilder: (sc) => BusBottomSheet(
+          scrollController: sc,
+          currentView: _currentView,
+          suggestedBuses: _suggestedBuses,
+          nearbyBuses: _busesOnRoute, // Show buses from Route 224 in the panel
+          onBusSelected: (bus) {
+            // This is the "Choose Bus" action
+            ScaffoldMessenger.of(context).showSnackBar(
+              SnackBar(content: Text("Starting trip with Bus ${bus.plateNumber}... (UI Placeholder)")),
+            );
+          },
+        ),
+        body: Stack(
+          children: [
+            FlutterMap(
+              mapController: mapController,
+              options: MapOptions(
+                initialCenter: initialCenter,
+                initialZoom: 13,
+                onTap: (_, __) => setState(() => _selectedBus = null),
+              ),
               children: [
-                FlutterMap(
-                  mapController: mapController,
-                  options: MapOptions(
-                    initialCenter: _simulationMode
-                        ? _startPoint
-                        : LatLng(_currentPosition!.latitude,
-                            _currentPosition!.longitude),
-                    initialZoom: 13,
-                    onTap: (_, _) {
-                      setState(() => _selectedBus = null);
-                    },
-                    onMapReady: () {
-                      // Now that the map is ready, we can fetch data and control it.
-                      if (!_simulationMode) {
-                        _initMap();
-                      }
-                    },
+                TileLayer(
+                  urlTemplate: 'https://{s}.basemaps.cartocdn.com/dark_all/{z}/{x}/{y}{r}.png',
+                  subdomains: const ['a', 'b', 'c', 'd'],
+                  userAgentPackageName: 'com.bosta.app',
+                ),
+                if (_isNearRoute && _route224 != null)
+                  PolylineLayer(
+                    polylines: [
+                      Polyline(
+                        points: _route224!.geometry,
+                        color: _selectedBus != null
+                            ? const Color(0xFF2ED8C3).withOpacity(0.7)
+                            : Colors.grey.withOpacity(0.4),
+                        strokeWidth: 5,
+                      ),
+                    ],
                   ),
-                  children: [
-                    TileLayer(
-                      urlTemplate:
-                          'https://tile.openstreetmap.org/{z}/{x}/{y}.png',
-                      userAgentPackageName: 'com.example.bosta_frontend',
-                    ),
-                    if (_routePoints.isNotEmpty)
-                      PolylineLayer(
-                        polylines: [
-                          Polyline(
-                              points:
-                                  _routePoints, // This is for the simulation route
-                              color: transitTokens.routePrimary ??
-                                  Colors.deepPurple,
-                              strokeWidth: 5),
-                        ],
-                      ),
-                    // Layer for Database Routes
-                    if (_dbRoutes.isNotEmpty)
-                      PolylineLayer(
-                        polylines: _dbRoutes.map((route) {
-                          return Polyline(
-                            points: route.geometry,
-                            color: (transitTokens.routePrimary ?? Colors.blue)
-                                .withOpacity(0.8),
-                            strokeWidth: 4,
-                          );
-                        }).toList(),
-                      ),
-                    // Layer for Database Stops
-                    if (_dbRoutes.isNotEmpty)
-                      MarkerLayer(markers: [
-                        ..._dbRoutes.expand((route) => route.stops).map((stop) {
-                          final routeOfStop = _dbRoutes
-                              .firstWhere((r) => r.stops.contains(stop));
-                          return Marker(
-                              point: stop.location,
-                              width: 24,
-                              height: 24,
-                              child: GestureDetector(
-                                onTap: () {
-                                  setState(() => _selectedStop = stop);
-                                  ScaffoldMessenger.of(context).showSnackBar(
-                                    SnackBar(
-                                      content: Text(
-                                          'Route: ${routeOfStop.name} - Stop #${stop.order}'),
-                                      duration: const Duration(seconds: 3),
-                                      behavior: SnackBarBehavior.floating,
-                                    ),
-                                  );
-                                },
-                                child: Container(
-                                  decoration: BoxDecoration(
-                                      color: Colors.white.withOpacity(0.8),
-                                      shape: BoxShape.circle,
-                                      border: Border.all(
-                                          color: Colors.black54, width: 1.5)),
-                                  child: Icon(Icons.directions_bus,
-                                      color: Colors.blue[800], size: 16),
-                                ),
-                              ));
-                        })
-                      ]),
-                    MarkerLayer(
-                      markers: [
-                        if (_currentPosition != null)
-                          Marker(
-                            point: LatLng(
-                              _currentPosition!.latitude,
-                              _currentPosition!.longitude,
-                            ),
-                            width: 30,
-                            height: 30,
-                            child: Icon(Icons.my_location,
-                                color: colorScheme.primary, size: 30),
-                          ),
-
-                        // Show live buses OR simulated buses
-                        if (!_simulationMode)
-                          ..._buildLiveBusMarkers(transitTokens),
-                        if (_simulationMode)
-                          ..._buildSimulatedBusMarkers(colorScheme),
-
-                        // Markers for start and destination
-                        if (_routePoints.isNotEmpty) ...[
-                          Marker(
-                            point: _startPoint,
-                            width: 80,
-                            height: 50,
-                            child: Column(children: [
-                              Icon(Icons.flag,
-                                  color: transitTokens.etaPositive),
-                              const Text("Start")
-                            ]),
-                          ),
-                          Marker(
-                            point: _destinationPoint,
-                            width: 80,
-                            height: 50,
-                            child: Column(children: [
-                              Icon(Icons.flag, color: colorScheme.error),
-                              const Text("End")
-                            ]),
-                          ),
-                        ]
-                      ],
-                    ),
+                MarkerLayer(
+                  markers: [
+                    if (_isNearRoute) ..._buildBusMarkers(),
+                    if (_currentPosition != null) _buildUserLocationMarker(),
                   ],
                 ),
-          // Bus info card for LIVE bus
-          if (!_simulationMode && _selectedBus != null)
-            _buildLiveBusInfoCard(_selectedBus!, transitTokens),
-
-          // Info card for SIMULATED bus
-          if (_simulationMode && _simulatedBuses.isNotEmpty)
-            _buildSimulatedBusInfoCard(_simulatedBuses.first, transitTokens),
-        ],
-      ),
-      floatingActionButton: FloatingActionButton(
-        onPressed: _simulationMode ? _centerOnRoute : _getCurrentLocation,
-        backgroundColor: colorScheme.primary,
-        foregroundColor: colorScheme.onPrimary,
-        child: Icon(_simulationMode ? Icons.route : Icons.my_location,
+              ],
+            ),
+            _buildGradientOverlay(context),
+            _buildHeaderUI(),
+            if (_currentPosition == null)
+              Center(
+                child: Container(
+                  padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 8),
+                  decoration: BoxDecoration(
+                    color: Colors.black.withOpacity(0.6),
+                    borderRadius: BorderRadius.circular(20),
+                  ),
+                  child: Text("Finding your location...", style: GoogleFonts.urbanist(color: Colors.white)),
+                ),
+              ),
+          ],
         ),
       ),
+      floatingActionButton: FloatingActionButton(
+        onPressed: _centerView,
+        backgroundColor: colorScheme.primary,
+        foregroundColor: colorScheme.onPrimary,
+        child: Icon(_selectedBus != null ? Icons.route : Icons.my_location),
+      ),
     );
+  }
+
+  void _centerView() {
+    if (_selectedBus != null && _route224 != null) {
+      // Center on the selected route
+      mapController.fitCamera(
+        CameraFit.coordinates(
+          coordinates: _route224!.geometry,
+          padding: const EdgeInsets.all(50),
+        ),
+      );
+    } else if (_currentPosition != null) {
+      // Center on user
+      mapController.move(
+        LatLng(_currentPosition!.latitude, _currentPosition!.longitude),
+        15.0,
+      );
+    }
   }
 
   // --- UI Helper Widgets ---
 
-  Widget _buildSimulatedBusInfoCard(BusSimulation sim, TransitTokens transitTokens) {
-    return Positioned(
-      bottom: 16, left: 16, right: 16,
-      child: Card(
-        color: transitTokens.sheetSurface,
-        child: Padding(
-          padding: const EdgeInsets.all(16),
-          child: Column(
-            mainAxisSize: MainAxisSize.min,
-            children: [
-              Row(
-                children: [
-                  const Icon(Icons.directions_bus_outlined),
-                  const SizedBox(width: 8),
-                  Expanded(
-                    child: Column(
-                      crossAxisAlignment: CrossAxisAlignment.start,
-                      children: [
-                        Text('Bus ${sim.plateNumber}', style: Theme.of(context).textTheme.titleMedium),
-                        Text('Route: Jbeil -> Batroun (Sim)', style: Theme.of(context).textTheme.bodyMedium),
-                        Text('Speed: ${sim.speedKph.toStringAsFixed(0)} km/h', style: Theme.of(context).textTheme.bodyMedium),
-                      ],
-                    ),
-                  ),
-                  Column(
-                    crossAxisAlignment: CrossAxisAlignment.end,
-                    children: [
-                      Text('ETA to End', style: Theme.of(context).textTheme.bodySmall),
-                      ValueListenableBuilder<String>(
-                        valueListenable: sim.etaNotifier,
-                        builder: (context, eta, child) {
-                          return Text(eta, style: Theme.of(context).textTheme.titleMedium?.copyWith(fontWeight: FontWeight.bold));
-                        },
-                      ),
-                    ],
-                  )
-                ],
-              ),
-            ],
-          ),
-        ),
-      ),
-    );
-  }
-
-  Widget _buildLiveBusInfoCard(Bus bus, TransitTokens transitTokens) {
-    return Positioned(
-      bottom: 16, left: 16, right: 16,
-      child: Card(
-        color: transitTokens.sheetSurface,
-        child: Padding(
-          padding: const EdgeInsets.all(16),
-          child: Column(
-            mainAxisSize: MainAxisSize.min,
-            children: [
-              Row(
-                children: [
-                  const Icon(Icons.directions_bus),
-                  const SizedBox(width: 8),
-                  Expanded(
-                    child: Column(
-                      crossAxisAlignment: CrossAxisAlignment.start,
-                      children: [
-                        Text('Bus ${bus.plateNumber}', style: Theme.of(context).textTheme.titleMedium),
-                        if (bus.routeName != null) Text('Route: ${bus.routeName}', style: Theme.of(context).textTheme.bodyMedium),
-                        Text('Distance: ${(bus.distanceMeters! / 1000).toStringAsFixed(1)} km', style: Theme.of(context).textTheme.bodyMedium),
-                      ],
-                    ),
-                  ),
-                  ElevatedButton(onPressed: _checkEta, child: const Text('Check ETA')),
-                ],
-              ),
-            ],
-          ),
-        ),
-      ),
-    );
-  }
-
-  List<Marker> _buildLiveBusMarkers(TransitTokens transitTokens) {
-    return _nearbyBuses.map((bus) {
+  List<Marker> _buildBusMarkers() {
+    return _busesOnRoute.map((bus) {
+      final isSelected = _selectedBus?.id == bus.id;
       return Marker(
+        width: isSelected ? 40 : 30,
+        height: isSelected ? 40 : 30,
         point: LatLng(bus.latitude, bus.longitude),
-        width: _busIconSize, height: _busIconSize,
         child: GestureDetector(
-          onTap: () => setState(() => _selectedBus = bus),
+          onTap: () => _onBusMarkerTapped(bus),
+          child: _BusMarker(
+            pulseController: _pulseController,
+            isSelected: isSelected,
+            busColor: const Color(0xFF2ED8C3),
+          ),
+        ),
+      );
+    }).toList();
+  }
+
+  Marker _buildUserLocationMarker() {
+    return Marker(
+      point: LatLng(_currentPosition!.latitude, _currentPosition!.longitude),
+      width: 24,
+      height: 24,
+      child: Container(
+        decoration: BoxDecoration(
+          shape: BoxShape.circle,
+          color: const Color(0xFF2ED8C3),
+          border: Border.all(color: Colors.white, width: 3),
+          boxShadow: [
+            BoxShadow(
+              color: const Color(0xFF2ED8C3).withOpacity(0.5),
+              blurRadius: 10,
+              spreadRadius: 5,
+            ),
+          ],
+        ],
+      ),
+    );
+  }
+
+  Widget _buildGradientOverlay(BuildContext context) {
+    return IgnorePointer(
+      child: Container(
+        decoration: BoxDecoration(
+          gradient: LinearGradient(
+            colors: [
+              const Color(0xFF12161A).withOpacity(0.8),
+              const Color(0xFF12161A).withOpacity(0.0),
+            ],
+            begin: Alignment.topCenter,
+            end: Alignment.center,
+            stops: const [0.0, 0.4],
+          ),
+        ),
+      ),
+    );
+  }
+
+  Widget _buildHeaderUI() {
+    return SafeArea(
+      child: Padding(
+        padding: const EdgeInsets.symmetric(horizontal: 16.0, vertical: 8.0),
+        child: Column(
+          children: [
+            DualSearchBar(
+              onDestinationSubmitted: (destination) {
+                // This would trigger a search for routes to the destination
+                debugPrint("Destination submitted: $destination");
+              },
+            ),
+            const SizedBox(height: 16), // Spacing between search bar and segmented control
+            CupertinoSlidingSegmentedControl<RiderView>(
+              groupValue: _currentView,
+              backgroundColor: Colors.black.withOpacity(0.4),
+              thumbColor: const Color(0xFF2ED8C3),
+              padding: const EdgeInsets.all(4),
+              onValueChanged: (view) {
+                if (view != null) {
+                  _onViewChanged(view);
+                }
+              },
+              children: {
+                RiderView.planTrip: _buildSegment("Plan Trip"),
+                RiderView.nearbyBuses: _buildSegment("Nearby Buses"),
+              },
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+
+  Widget _buildSegment(String text) {
+    return Padding(
+      padding: const EdgeInsets.symmetric(horizontal: 20, vertical: 8),
+      child: Text(
+        text,
+        style: GoogleFonts.urbanist(
+          color: Colors.white,
+          fontWeight: FontWeight.w600,
+        ),
+      ),
+    );
+  }
+}
+
+class _BusMarker extends StatelessWidget {
+  final AnimationController pulseController;
+  final bool isSelected;
+  final Color busColor; // Add this
+
+  const _BusMarker({
+    required this.pulseController,
+    this.isSelected = false,
+    required this.busColor, // Require it
+  });
+
+  @override
+  Widget build(BuildContext context) {
+    return Stack(
+      alignment: Alignment.center,
+      children: [
+        FadeTransition(
+          opacity: Tween<double>(begin: 1.0, end: 0.5).animate(pulseController),
+          child: ScaleTransition(
+            scale: Tween<double>(begin: 1.0, end: 1.5).animate(pulseController),
+            child: Container(
+              decoration: BoxDecoration(
+                shape: BoxShape.circle,
+                color: busColor.withOpacity(0.5), // Use busColor
+              ),
+            ),
+          ),
+        ),
+        Container(
+          padding: const EdgeInsets.all(4),
+          decoration: BoxDecoration(
+            shape: BoxShape.circle,
+            color: isSelected ? Colors.white : const Color(0xFF12161A),
+            border: Border.all(
+              color: busColor,
+              width: isSelected ? 3 : 2,
+            ), // Use busColor
+            boxShadow: [
+              BoxShadow(
+                color: const Color(0xFF2ED8C3).withOpacity(0.7),
+                blurRadius: 10,
+                spreadRadius: 2,
+              ),
+            ],
+          ),
           child: Icon(
             Icons.directions_bus,
-            color: _selectedBus?.id == bus.id ? transitTokens.markerSelected : transitTokens.markerNormal,
-            size: _busIconSize,
+            color: isSelected ? const Color(0xFF12161A) : busColor,
+            size: 20,
           ),
         ),
-      );
-    }).toList();
-  }
-
-  List<Marker> _buildSimulatedBusMarkers(ColorScheme colorScheme) {
-    return _simulatedBuses.map((sim) {
-      return Marker(
-        point: sim.animation.value, // This is safe as animation is not nullable
-        width: _busIconSize, height: _busIconSize,
-        child: Icon(Icons.directions_bus, color: colorScheme.secondary, size: _busIconSize),
-      );
-    }).toList();
-  }
-
-  String _formatDuration(Duration d) {
-    if (d.inHours > 0) return '${d.inHours}h ${d.inMinutes.remainder(60)}m';
-    if (d.inMinutes > 0) return '${d.inMinutes}m ${d.inSeconds.remainder(60)}s';
-    if (d.inSeconds > 0) return '${d.inSeconds}s';
-    return 'Now';
+      ],
+    );
   }
 }

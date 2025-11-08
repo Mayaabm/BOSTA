@@ -6,6 +6,8 @@ class Bus {
   final double speed;
   final double? distanceMeters;
   final String? routeName;
+  final String? driverName;
+  final double? driverRating;
 
   Bus({
     required this.id,
@@ -15,6 +17,8 @@ class Bus {
     required this.speed,
     this.distanceMeters,
     this.routeName,
+    this.driverName,
+    this.driverRating,
   });
 
   factory Bus.fromJson(Map<String, dynamic> json) {
@@ -26,6 +30,8 @@ class Bus {
       speed: json['speed_mps'] ?? 0.0,
       distanceMeters: json['distance_m']?.toDouble(),
       routeName: json['route'],
+      driverName: json['driver_name'], // Assuming these fields might come from the API
+      driverRating: json['driver_rating']?.toDouble(),
     );
   }
 }

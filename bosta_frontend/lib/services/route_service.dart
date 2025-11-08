@@ -15,4 +15,16 @@ class RouteService {
       throw Exception('Failed to load routes');
     }
   }
+
+  static Future<AppRoute> getRouteById(String id) async {
+    final url = Uri.parse('${ApiEndpoints.routes}/$id');
+    final response = await http.get(url);
+
+    if (response.statusCode == 200) {
+      dynamic data = json.decode(response.body);
+      return AppRoute.fromJson(data);
+    } else {
+      throw Exception('Failed to load route with id $id');
+    }
+  }
 }

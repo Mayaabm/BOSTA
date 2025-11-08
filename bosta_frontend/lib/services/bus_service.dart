@@ -64,4 +64,21 @@ class BusService {
       throw Exception('Network error: $e');
     }
   }
+
+  static Future<List<Bus>> getBusesForRoute(String routeId) async {
+    // This endpoint needs to be created in your Django backend.
+    // It should return a list of buses currently active on the given route.
+    final url = Uri.parse('${ApiEndpoints.busesForRoute}?route_id=$routeId');
+
+    try {
+      final response = await http.get(url);
+      if (response.statusCode == 200) {
+        final List<dynamic> data = json.decode(response.body);
+        return data.map((json) => Bus.fromJson(json)).toList();
+      }
+      throw Exception('Failed to load buses for route $routeId');
+    } catch (e) {
+      throw Exception('Network error: $e');
+    }
+  }
 }
