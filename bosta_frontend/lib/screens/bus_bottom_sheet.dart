@@ -2,8 +2,8 @@ import 'package:flutter/material.dart';
 import 'package:google_fonts/google_fonts.dart';
 
 import '../../../../models/bus.dart';
-import 'home_screen.dart';
 import 'bus_suggestion_card.dart';
+import 'rider_home_screen.dart';
 
 class BusBottomSheet extends StatelessWidget {
   final ScrollController scrollController;

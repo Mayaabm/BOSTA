@@ -10,7 +10,7 @@ class BusService {
     double radius = 100000,
   }) async {
     final url = Uri.parse(
-      '${ApiEndpoints.busesNearby}?lat=$latitude&lon=$longitude&radius=$radius',
+      '${ApiEndpoints.busesNearby}/?lat=$latitude&lon=$longitude&radius=$radius',
     );
 
     try {
@@ -31,7 +31,7 @@ class BusService {
     required double targetLon,
   }) async {
     final url = Uri.parse(
-      '${ApiEndpoints.eta}?bus_id=$busId&target_lat=$targetLat&target_lon=$targetLon',
+      '${ApiEndpoints.eta}/?bus_id=$busId&target_lat=$targetLat&target_lon=$targetLon',
     );
 
     try {
@@ -50,7 +50,7 @@ class BusService {
     required double longitude,
   }) async {
     final url = Uri.parse(
-      '${ApiEndpoints.busesToDestination}?lat=$latitude&lon=$longitude',
+      '${ApiEndpoints.busesToDestination}/?lat=$latitude&lon=$longitude',
     );
 
     try {
@@ -68,7 +68,7 @@ class BusService {
   static Future<List<Bus>> getBusesForRoute(String routeId) async {
     // This endpoint needs to be created in your Django backend.
     // It should return a list of buses currently active on the given route.
-    final url = Uri.parse('${ApiEndpoints.busesForRoute}?route_id=$routeId');
+    final url = Uri.parse('${ApiEndpoints.busesForRoute}/?route_id=$routeId');
 
     try {
       final response = await http.get(url);

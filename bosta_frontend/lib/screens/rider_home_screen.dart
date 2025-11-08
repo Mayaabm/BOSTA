@@ -66,26 +66,40 @@ class _RiderHomeScreenState extends State<RiderHomeScreen> with TickerProviderSt
 
   Future<void> _initLocationAndRoute() async {
     try {
-      // 1. Fetch the static route data first
-      final route = await RouteService.getRouteById(_targetRouteId);
-      if (mounted) {
-        setState(() => _route224 = route);
-      }
-
-      // 2. Get user's location
       await Geolocator.requestPermission();
       final position = await Geolocator.getCurrentPosition();
       if (mounted) {
         setState(() => _currentPosition = position);
         mapController.move(LatLng(position.latitude, position.longitude), 14.0);
-        _startListeningToLocation(); // This will trigger the proximity check
+        _startListeningToLocation(); // Start listening for continuous location updates
         _startPeriodicBusUpdates();
       }
+
+      // 2. After location is successful, fetch the route data.
+      // This is now in a separate try-catch so it doesn't block map initialization.
+      try {
+        final route = await RouteService.getRouteById(_targetRouteId);
+        if (mounted) {
+          setState(() => _route224 = route);
+          // Check proximity now that we have both location and route
+          _checkProximityToRoute();
+        }
+      } catch (e) {
+        debugPrint("----------- ROUTE FETCH ERROR -----------");
+        debugPrint("Could not fetch route '$_targetRouteId'. The map will function without it. Error: $e");
+        // We don't show a snackbar here to avoid bothering the user if the backend is just down.
+        // The app will still be usable.
+      }
+
     } catch (e) {
-      debugPrint("Error during initialization: $e");
+      // This catch block now only handles critical location failures.
+      debugPrint("----------- LOCATION ERROR -----------");
+      debugPrint("Failed to get user location: $e");
       if (mounted) {
         ScaffoldMessenger.of(context).showSnackBar(
-          const SnackBar(content: Text("Could not initialize map. Please try again.")),
+          const SnackBar(
+            content: Text("Could not get location. Please enable location services and grant permission."),
+          ),
         );
       }
     }
@@ -96,7 +110,7 @@ class _RiderHomeScreenState extends State<RiderHomeScreen> with TickerProviderSt
     _positionStream = Geolocator.getPositionStream().listen((Position position) {
       if (mounted) {
         setState(() => _currentPosition = position);
-        _checkProximityToRoute();
+        _checkProximityToRoute(); // Check proximity on every location update
       }
     });
   }
@@ -271,6 +285,15 @@ class _RiderHomeScreenState extends State<RiderHomeScreen> with TickerProviderSt
     }
   }
 
+  void _onViewChanged(RiderView newView) {
+    setState(() {
+      _currentView = newView;
+      if (newView == RiderView.nearbyBuses && _isNearRoute) {
+        _fetchBusesForRoute();
+      }
+    });
+  }
+
   // --- UI Helper Widgets ---
 
   List<Marker> _buildBusMarkers() {
@@ -309,7 +332,7 @@ class _RiderHomeScreenState extends State<RiderHomeScreen> with TickerProviderSt
               spreadRadius: 5,
             ),
           ],
-        ],
+        ),
       ),
     );
   }
@@ -352,7 +375,7 @@ class _RiderHomeScreenState extends State<RiderHomeScreen> with TickerProviderSt
               padding: const EdgeInsets.all(4),
               onValueChanged: (view) {
                 if (view != null) {
-                  _onViewChanged(view);
+                  _onViewChanged(view); // This will now work
                 }
               },
               children: {
@@ -396,18 +419,23 @@ class _BusMarker extends StatelessWidget {
     return Stack(
       alignment: Alignment.center,
       children: [
-        FadeTransition(
-          opacity: Tween<double>(begin: 1.0, end: 0.5).animate(pulseController),
-          child: ScaleTransition(
-            scale: Tween<double>(begin: 1.0, end: 1.5).animate(pulseController),
-            child: Container(
-              decoration: BoxDecoration(
-                shape: BoxShape.circle,
-                color: busColor.withOpacity(0.5), // Use busColor
+        // Pulsing animation, shown only when selected
+        if (isSelected)
+          FadeTransition(
+            opacity:
+                Tween<double>(begin: 0.7, end: 0.2).animate(pulseController),
+            child: ScaleTransition(
+              scale:
+                  Tween<double>(begin: 1.0, end: 2.5).animate(pulseController),
+              child: Container(
+                decoration: BoxDecoration(
+                  shape: BoxShape.circle,
+                  color: busColor.withOpacity(0.5),
+                ),
               ),
             ),
           ),
-        ),
+        // Main bus icon container
         Container(
           padding: const EdgeInsets.all(4),
           decoration: BoxDecoration(
@@ -416,19 +444,19 @@ class _BusMarker extends StatelessWidget {
             border: Border.all(
               color: busColor,
               width: isSelected ? 3 : 2,
-            ), // Use busColor
+            ),
             boxShadow: [
               BoxShadow(
-                color: const Color(0xFF2ED8C3).withOpacity(0.7),
-                blurRadius: 10,
-                spreadRadius: 2,
+                color: busColor.withOpacity(0.7),
+                blurRadius: isSelected ? 12 : 8,
+                spreadRadius: isSelected ? 3 : 1,
               ),
             ],
           ),
           child: Icon(
             Icons.directions_bus,
             color: isSelected ? const Color(0xFF12161A) : busColor,
-            size: 20,
+            size: 16,
           ),
         ),
       ],

@@ -9,10 +9,9 @@ import 'package:sliding_up_panel/sliding_up_panel.dart';
 
 import '../../../models/bus.dart';
 import '../../../services/bus_service.dart';
-import 'bus_bottom_sheet.dart';
-import 'dual_search_bar.dart';
-
-enum RiderView { planTrip, nearbyBuses }
+import 'rider_home_screen.dart' show RiderView; // Import only the enum
+import 'bus_bottom_sheet.dart'; // Keep other imports
+import 'dual_search_bar.dart'; // Keep other imports
 
 class RiderHomeScreen extends StatefulWidget {
   const RiderHomeScreen({super.key});
@@ -233,6 +232,7 @@ class _RiderHomeScreenState extends State<RiderHomeScreen> with TickerProviderSt
           child: _BusMarker(
             pulseController: _pulseController,
             isSelected: isSelected,
+            busColor: const Color(0xFF2ED8C3), // Add the required color
           ),
         ),
       );
@@ -354,10 +354,12 @@ class _RiderHomeScreenState extends State<RiderHomeScreen> with TickerProviderSt
 class _BusMarker extends StatelessWidget {
   final AnimationController pulseController;
   final bool isSelected;
+  final Color busColor;
 
   const _BusMarker({
     required this.pulseController,
     this.isSelected = false,
+    required this.busColor,
   });
 
   @override
@@ -372,7 +374,7 @@ class _BusMarker extends StatelessWidget {
             child: Container(
               decoration: BoxDecoration(
                 shape: BoxShape.circle,
-                color: const Color(0xFF2ED8C3).withOpacity(0.5),
+                color: busColor.withOpacity(0.5),
               ),
             ),
           ),
@@ -383,12 +385,12 @@ class _BusMarker extends StatelessWidget {
             shape: BoxShape.circle,
             color: isSelected ? Colors.white : const Color(0xFF12161A),
             border: Border.all(
-              color: const Color(0xFF2ED8C3),
+              color: busColor,
               width: isSelected ? 3 : 2,
             ),
             boxShadow: [
               BoxShadow(
-                color: const Color(0xFF2ED8C3).withOpacity(0.7),
+                color: busColor.withOpacity(0.7),
                 blurRadius: 10,
                 spreadRadius: 2,
               ),
@@ -396,7 +398,7 @@ class _BusMarker extends StatelessWidget {
           ),
           child: Icon(
             Icons.directions_bus,
-            color: isSelected ? const Color(0xFF12161A) : const Color(0xFF2ED8C3),
+            color: isSelected ? const Color(0xFF12161A) : busColor,
             size: 20,
           ),
         ),
