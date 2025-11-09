@@ -1,7 +1,8 @@
 import 'package:flutter/material.dart';
 import 'package:go_router/go_router.dart';
 import '../screens/auth_screen.dart';
-import '../screens/driver_dashboard_screen.dart';
+import 'driver_dashboard.dart';
+import 'package:provider/provider.dart';
 import '../screens/rider_home_screen.dart';
 import 'auth_service.dart';
 
@@ -23,7 +24,12 @@ class AppRouter {
         ),
         GoRoute(
           path: '/driver/dashboard',
-          builder: (context, state) => const DriverDashboardScreen(),
+          builder: (context, state) {
+            // Pass the driver info from the auth state to the dashboard screen.
+            // Fetch directly from the provider, which is the source of truth during a redirect.
+            final authService = Provider.of<AuthService>(context, listen: false);
+            return DriverDashboardScreen(driverInfo: authService.currentState.driverInfo);
+          },
         ),
       ],
       redirect: (BuildContext context, GoRouterState state) {
@@ -35,7 +41,9 @@ class AppRouter {
         }
 
         if (authState.isAuthenticated && onAuthRoute) {
-          return authState.role == UserRole.driver ? '/driver/dashboard' : '/rider/home';
+          return authState.role == UserRole.driver
+              ? '/driver/dashboard'
+              : '/rider/home';
         }
 
         // If the user is authenticated but on a route that doesn't match their role, redirect them.

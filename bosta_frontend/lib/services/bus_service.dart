@@ -1,84 +1,97 @@
 import 'dart:convert';
 import 'package:http/http.dart' as http;
 import '../models/bus.dart';
-import 'package:bosta_frontend/services/api_endpoints.dart';
+import '../models/user_location.dart';
+import 'api_endpoints.dart';
 
 class BusService {
-  static Future<List<Bus>> getNearbyBuses({
-    required double latitude,
-    required double longitude,
-    double radius = 100000,
-  }) async {
-    final url = Uri.parse(
-      '${ApiEndpoints.busesNearby}/?lat=$latitude&lon=$longitude&radius=$radius',
-    );
+  /// Fetches detailed information for a single bus, including ETA if location is provided.
+  static Future<Bus> getBusDetails(String busId, {UserLocation? userLocation}) async {
+    String url = ApiEndpoints.busById(busId);
+    if (userLocation != null) {
+      url += '?lat=${userLocation.latitude}&lon=${userLocation.longitude}';
+    }
+    final uri = Uri.parse(url);
+    final response = await http.get(uri);
 
-    try {
-      final response = await http.get(url);
-      if (response.statusCode == 200) {
-        final List<dynamic> data = json.decode(response.body);
-        return data.map((json) => Bus.fromJson(json)).toList();
-      }
-      throw Exception('Failed to load nearby buses');
-    } catch (e) {
-      throw Exception('Network error: $e');
+    if (response.statusCode == 200) {
+      final data = json.decode(response.body);
+      return Bus.fromJson(data);
+    } else {
+      throw Exception('Failed to load details for bus $busId: ${response.body}');
     }
   }
 
-  static Future<BusEta> getEta({
+  static Future<Bus> getBusById(String busId) async {
+    final uri = Uri.parse(ApiEndpoints.busById(busId));
+    final response = await http.get(uri);
+
+    if (response.statusCode == 200) {
+      final data = json.decode(response.body);
+      return Bus.fromJson(data);
+    } else {
+      throw Exception('Failed to load bus with ID $busId: ${response.body}');
+    }
+  }
+
+  /// Sends the bus's current location to the backend.
+  static Future<void> updateLocation({
     required String busId,
-    required double targetLat,
-    required double targetLon,
-  }) async {
-    final url = Uri.parse(
-      '${ApiEndpoints.eta}/?bus_id=$busId&target_lat=$targetLat&target_lon=$targetLon',
-    );
-
-    try {
-      final response = await http.get(url);
-      if (response.statusCode == 200) {
-        return BusEta.fromJson(json.decode(response.body));
-      }
-      throw Exception('Failed to get ETA');
-    } catch (e) {
-      throw Exception('Network error: $e');
-    }
-  }
-
-  static Future<List<Bus>> getBusesToDestination({
     required double latitude,
     required double longitude,
   }) async {
-    final url = Uri.parse(
-      '${ApiEndpoints.busesToDestination}/?lat=$latitude&lon=$longitude',
+    final uri = Uri.parse(ApiEndpoints.updateBusLocation);
+    final response = await http.post(
+      uri,
+      headers: {'Content-Type': 'application/json'},
+      body: json.encode({
+        'bus_id': busId,
+        'latitude': latitude,
+        'longitude': longitude,
+      }),
     );
 
-    try {
-      final response = await http.get(url);
-      if (response.statusCode == 200) {
-        final List<dynamic> data = json.decode(response.body);
-        return data.map((json) => Bus.fromJson(json)).toList();
-      }
-      throw Exception('Failed to load buses to destination');
-    } catch (e) {
-      throw Exception('Network error: $e');
+    if (response.statusCode != 200) {
+      throw Exception('Failed to update bus location: ${response.body}');
     }
   }
 
-  static Future<List<Bus>> getBusesForRoute(String routeId) async {
-    // This endpoint needs to be created in your Django backend.
-    // It should return a list of buses currently active on the given route.
-    final url = Uri.parse('${ApiEndpoints.busesForRoute}/?route_id=$routeId');
+  /// Fetches buses near a given coordinate.
+  static Future<List<Bus>> getNearbyBuses({required double latitude, required double longitude, double radius = 10000}) async {
+    final uri = Uri.parse('${ApiEndpoints.busesNearby}?lat=$latitude&lon=$longitude&radius=$radius');
+    final response = await http.get(uri);
 
-    try {
-      final response = await http.get(url);
-      if (response.statusCode == 200) {
-        final List<dynamic> data = json.decode(response.body);
-        return data.map((json) => Bus.fromJson(json)).toList();
-      }
+    if (response.statusCode == 200) {
+      final List<dynamic> data = json.decode(response.body);
+      return data.map((json) => Bus.fromJson(json)).toList();
+    } else {
+      throw Exception('Failed to load nearby buses');
+    }
+  }
+
+  /// Fetches all buses assigned to a specific route.
+  static Future<List<Bus>> getBusesForRoute(String routeId) async {
+    final uri = Uri.parse('${ApiEndpoints.busesForRoute}?route_id=$routeId');
+    final response = await http.get(uri);
+
+    if (response.statusCode == 200) {
+      final List<dynamic> data = json.decode(response.body);
+      return data.map((json) => Bus.fromJson(json)).toList();
+    } else {
       throw Exception('Failed to load buses for route $routeId');
-    } catch (e) {
-      throw Exception('Network error: $e');
+    }
+  }
+
+  /// Fetches buses that are heading towards a destination.
+  static Future<List<Bus>> getBusesToDestination({required double latitude, required double longitude}) async {
+    final uri = Uri.parse('${ApiEndpoints.busesToDestination}?lat=$latitude&lon=$longitude');
+    final response = await http.get(uri);
+
+    if (response.statusCode == 200) {
+      final List<dynamic> data = json.decode(response.body);
+      return data.map((json) => Bus.fromJson(json)).toList();
+    } else {
+      throw Exception('Failed to load buses to destination');
     }
   }
 }

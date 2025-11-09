@@ -45,7 +45,7 @@ INSTALLED_APPS = [
     'django.contrib.messages',
     'django.contrib.staticfiles',
     'api',
-     'rest_framework',
+    'rest_framework',
     'corsheaders',
     'django.contrib.gis',  
 ]
@@ -160,4 +160,12 @@ GEOS_LIBRARY_PATH = r"C:\Program Files\GDAL\geos_c.dll"
 
 #`Set-ExecutionPolicy -Scope Process -ExecutionPolicy Bypass`
 #.\venv312\Scripts\activate
+# In your settings.py
 
+# ... at the end of the file
+CORS_ALLOW_ALL_ORIGINS = True 
+
+# Add this to allow Django's `authenticate` function to work correctly.
+AUTHENTICATION_BACKENDS = [
+    'django.contrib.auth.backends.ModelBackend',
+]

@@ -2,6 +2,7 @@ import 'dart:async';
 import 'package:flutter/cupertino.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_map/flutter_map.dart';
+import 'package:bosta_frontend/models/user_location.dart';
 import 'package:geolocator/geolocator.dart';
 import 'package:google_fonts/google_fonts.dart';
 import 'package:latlong2/latlong.dart';
@@ -12,6 +13,7 @@ import '../models/route_model.dart'; // Using the actual model
 import '../services/bus_service.dart'; // Using the actual service
 import '../services/route_service.dart'; // Using the actual service
 import 'bus_bottom_sheet.dart';
+import 'bus_details_modal.dart';
 import 'dual_search_bar.dart';
 
 enum RiderView { planTrip, nearbyBuses }
@@ -37,27 +39,36 @@ class _RiderHomeScreenState extends State<RiderHomeScreen> with TickerProviderSt
   bool _isNearRoute = false;
 
   RiderView _currentView = RiderView.planTrip;
-  List<Bus> _suggestedBuses = []; // For trip planning
+  final List<Bus> _suggestedBuses = []; // For trip planning
   Bus? _selectedBus;
+  Timer? _selectedBusDetailsTimer;
+  bool _isAutoCentering = false;
 
   // Animation for bus markers
   late final AnimationController _pulseController; // For bus marker pulse animation
+  late final AnimationController _markerAnimationController;
+  Animation<LatLng>? _markerAnimation;
 
   @override
   void initState() {
     super.initState();
+    _markerAnimationController = AnimationController(vsync: this, duration: const Duration(seconds: 2));
+
     _pulseController = AnimationController(
       vsync: this,
       duration: const Duration(seconds: 1),
     )..repeat(reverse: true);
 
     _initLocationAndRoute();
+    _listenToMapEvents();
   }
 
   @override
   void dispose() {
     _positionStream?.cancel();
     _busUpdateTimer?.cancel();
+    _selectedBusDetailsTimer?.cancel();
+    _markerAnimationController.dispose();
     _pulseController.dispose();
     super.dispose();
   }
@@ -143,6 +154,21 @@ class _RiderHomeScreenState extends State<RiderHomeScreen> with TickerProviderSt
     }
   }
 
+  void _listenToMapEvents() {
+    mapController.mapEventStream.listen((event) {
+      // If the user manually moves the map (e.g., pan or pinch zoom)
+      // while auto-centering is active, disable it.
+      if (_isAutoCentering &&
+          (event is MapEventMove ||
+              event is MapEventRotate ||
+              event is MapEventDoubleTapZoom)) {
+        if (event.source == MapEventSource.fromInput) {
+          setState(() => _isAutoCentering = false);
+        }
+      }
+    });
+  }
+
   void _startPeriodicBusUpdates() {
     _busUpdateTimer = Timer.periodic(
       const Duration(seconds: 10),
@@ -166,14 +192,78 @@ class _RiderHomeScreenState extends State<RiderHomeScreen> with TickerProviderSt
   }
 
   void _onBusMarkerTapped(Bus bus) {
-    setState(() => _selectedBus = bus);
-    if (_route224 != null) {
-      mapController.fitCamera(
-        CameraFit.coordinates(
-          coordinates: _route224!.geometry,
-          padding: const EdgeInsets.all(50),
-        ),
-      );
+    setState(() {
+      _selectedBus = bus;
+      _isAutoCentering = true; // Enable auto-centering
+      _centerOnSelectedBus(); // Immediately move map to the bus
+    });
+
+    // Stop any previous timer
+    _selectedBusDetailsTimer?.cancel();
+
+    // Show the modal with live updates
+    showModalBottomSheet(
+      context: context,
+      isScrollControlled: true,
+      backgroundColor: Colors.transparent,
+      builder: (context) => BusDetailsModal(
+        busId: bus.id,
+        userLocation: _currentPosition != null
+            ? UserLocation(latitude: _currentPosition!.latitude, longitude: _currentPosition!.longitude)
+            : null,
+        onChooseBus: () {
+          // This would be the action to confirm the trip
+          ScaffoldMessenger.of(context).showSnackBar(
+            SnackBar(content: Text("Trip with Bus ${bus.plateNumber} confirmed!")),
+          );
+        },
+      ),
+    ).whenComplete(() {
+      // When the modal is closed, deselect the bus and stop updates
+      _deselectBus();
+    });
+
+    // Start polling for this specific bus's details
+    _selectedBusDetailsTimer = Timer.periodic(const Duration(seconds: 5), (timer) {
+      _fetchSelectedBusDetails(bus.id);
+    });
+  }
+
+  void _deselectBus() {
+    setState(() {
+      _selectedBus = null;
+      _selectedBusDetailsTimer?.cancel();
+      _markerAnimation = null;
+      _isAutoCentering = false;
+    });
+  }
+
+  Future<void> _fetchSelectedBusDetails(String busId) async {
+    try {
+      final updatedBus = await BusService.getBusDetails(busId,
+          userLocation: _currentPosition != null
+              ? UserLocation(latitude: _currentPosition!.latitude, longitude: _currentPosition!.longitude)
+              : null);
+      if (mounted && _selectedBus != null) {
+        final oldPosition = LatLng(_selectedBus!.latitude, _selectedBus!.longitude);
+        final newPosition = LatLng(updatedBus.latitude, updatedBus.longitude);
+
+        setState(() {
+          _selectedBus = updatedBus;
+          _markerAnimation = LatLngTween(begin: oldPosition, end: newPosition).animate(
+            CurvedAnimation(parent: _markerAnimationController, curve: Curves.linear),
+          );
+        });
+        _markerAnimationController.forward(from: 0.0);
+
+        if (_isAutoCentering) {
+          _centerOnSelectedBus(animated: true);
+        }
+      }
+    } catch (e) {
+      debugPrint("Error fetching details for bus $busId: $e");
+      // If the bus is no longer found, deselect it
+      _deselectBus();
     }
   }
 
@@ -213,8 +303,8 @@ class _RiderHomeScreenState extends State<RiderHomeScreen> with TickerProviderSt
               mapController: mapController,
               options: MapOptions(
                 initialCenter: initialCenter,
-                initialZoom: 13,
-                onTap: (_, __) => setState(() => _selectedBus = null),
+                initialZoom: 14,
+                onTap: (_, _) => _deselectBus(),
               ),
               children: [
                 TileLayer(
@@ -228,18 +318,28 @@ class _RiderHomeScreenState extends State<RiderHomeScreen> with TickerProviderSt
                       Polyline(
                         points: _route224!.geometry,
                         color: _selectedBus != null
-                            ? const Color(0xFF2ED8C3).withOpacity(0.7)
-                            : Colors.grey.withOpacity(0.4),
+                            ? const Color(0xFF2ED8C3) // Highlight in solid teal when selected
+                            : Colors.grey.withOpacity(0.5),
                         strokeWidth: 5,
                       ),
                     ],
                   ),
-                MarkerLayer(
-                  markers: [
-                    if (_isNearRoute) ..._buildBusMarkers(),
-                    if (_currentPosition != null) _buildUserLocationMarker(),
-                  ],
-                ),
+                if (_markerAnimation != null)
+                  AnimatedBuilder(
+                    animation: _markerAnimation!,
+                    builder: (context, _) {
+                      return MarkerLayer(markers: [
+                        if (_currentPosition != null) _buildUserLocationMarker(),
+                        _buildSelectedBusMarker(animatedPosition: _markerAnimation!.value),
+                      ]);
+                    },
+                  )
+                else
+                  MarkerLayer(markers: [
+                      if (_isNearRoute && _selectedBus == null) ..._buildAllBusMarkers(),
+                      if (_currentPosition != null) _buildUserLocationMarker(),
+                      if (_selectedBus != null) _buildSelectedBusMarker(),
+                    ]),
               ],
             ),
             _buildGradientOverlay(context),
@@ -268,19 +368,28 @@ class _RiderHomeScreenState extends State<RiderHomeScreen> with TickerProviderSt
   }
 
   void _centerView() {
-    if (_selectedBus != null && _route224 != null) {
-      // Center on the selected route
-      mapController.fitCamera(
-        CameraFit.coordinates(
-          coordinates: _route224!.geometry,
-          padding: const EdgeInsets.all(50),
-        ),
-      );
+    if (_selectedBus != null) {
+      // If a bus is selected, re-enable auto-centering and move to it.
+      setState(() => _isAutoCentering = true);
+      _centerOnSelectedBus();
     } else if (_currentPosition != null) {
       // Center on user
       mapController.move(
         LatLng(_currentPosition!.latitude, _currentPosition!.longitude),
         15.0,
+      );
+    }
+  }
+
+  void _centerOnSelectedBus({bool animated = false}) {
+    if (_selectedBus == null) return;
+    final center = LatLng(_selectedBus!.latitude, _selectedBus!.longitude);
+    if (animated) {
+      mapController.move(center, mapController.camera.zoom);
+    } else {
+      mapController.move(
+        center,
+        16.0, // Use a closer zoom when first tapping
       );
     }
   }
@@ -296,23 +405,36 @@ class _RiderHomeScreenState extends State<RiderHomeScreen> with TickerProviderSt
 
   // --- UI Helper Widgets ---
 
-  List<Marker> _buildBusMarkers() {
+  List<Marker> _buildAllBusMarkers() {
     return _busesOnRoute.map((bus) {
-      final isSelected = _selectedBus?.id == bus.id;
       return Marker(
-        width: isSelected ? 40 : 30,
-        height: isSelected ? 40 : 30,
+        width: 30,
+        height: 30,
         point: LatLng(bus.latitude, bus.longitude),
         child: GestureDetector(
           onTap: () => _onBusMarkerTapped(bus),
           child: _BusMarker(
             pulseController: _pulseController,
-            isSelected: isSelected,
+            isSelected: false,
             busColor: const Color(0xFF2ED8C3),
           ),
         ),
       );
     }).toList();
+  }
+
+  Marker _buildSelectedBusMarker({LatLng? animatedPosition}) {
+    final position = animatedPosition ?? (_selectedBus != null ? LatLng(_selectedBus!.latitude, _selectedBus!.longitude) : const LatLng(0, 0));
+    return Marker(
+      point: position,
+      width: 40,
+      height: 40,
+      child: _buildStaticSelectedMarker(),
+    );
+  }
+
+  Widget _buildStaticSelectedMarker() {
+    return _BusMarker(pulseController: _pulseController, isSelected: true, busColor: const Color(0xFF2ED8C3));
   }
 
   Marker _buildUserLocationMarker() {

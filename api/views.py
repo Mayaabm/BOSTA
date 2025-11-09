@@ -2,13 +2,15 @@ from django.contrib.gis.geos import Point
 from django.utils import timezone
 from rest_framework.decorators import api_view
 from rest_framework.response import Response
-from .models import VehiclePosition, Trip, Route, Bus
+from .models import VehiclePosition, Trip, Route, Bus, CustomUserProfile
 from datetime import timedelta
+from django.contrib.auth.models import User
 from django.contrib.gis.measure import D  
 from django.contrib.gis.db.models.functions import Distance
 from django.db.models import OuterRef, Subquery
 from django.db.models.functions import Coalesce, Cast
 from .serializers import BusNearbySerializer, RouteSerializer
+from django.contrib.auth import authenticate
 
 
 def compute_eta(bus_pos, target_point, avg_speed_m_per_s=10.0):
@@ -122,6 +124,110 @@ def route_list(request):
     routes = Route.objects.prefetch_related('stops').all()
     serializer = RouteSerializer(routes, many=True)
     return Response(serializer.data)
+
+@api_view(['GET'])
+def get_bus_details(request, bus_id):
+    """
+    Returns details for a single bus by its ID.
+    """
+    try:
+        bus = Bus.objects.get(pk=bus_id)
+    except Bus.DoesNotExist:
+        return Response({"error": f"Bus with id {bus_id} not found."}, status=404)
+
+    # Annotate with the latest route name
+    latest_trip = Trip.objects.filter(bus=bus).order_by('-departure_time').first()
+    bus.route_name = latest_trip.route.name if latest_trip and latest_trip.route else None
+
+    # Check for rider location to calculate ETA and distance
+    rider_lat = request.query_params.get('lat')
+    rider_lon = request.query_params.get('lon')
+
+    if rider_lat and rider_lon and bus.current_location:
+        rider_point = Point(float(rider_lon), float(rider_lat), srid=4326)
+        distance_m = bus.current_location.distance(rider_point)
+        
+        # Use bus's speed or a default to calculate ETA
+        avg_speed_m_per_s = bus.speed_mps if bus.speed_mps and bus.speed_mps > 1 else 8.0 # Fallback to ~30km/h
+        eta_seconds = distance_m / avg_speed_m_per_s
+
+        m, s = divmod(eta_seconds, 60)
+        h, m = divmod(m, 60)
+        eta_structured = {"hours": int(h), "minutes": int(m), "seconds": int(s)}
+
+        # Add the calculated fields to the bus object before serialization
+        bus.distance_m = distance_m
+        bus.eta = eta_structured # This will be a temporary attribute
+
+    serializer = BusNearbySerializer(bus)
+    data = serializer.data
+    # Manually add the eta structure if it was calculated
+    if hasattr(bus, 'eta'):
+        data['eta'] = bus.eta
+    return Response(data)
+
+@api_view(['POST'])
+def driver_login(request):
+    """
+    Authenticates a driver using email and password, then returns their assigned bus and route.
+    """
+    email = request.data.get('email')
+    password = request.data.get('password')
+
+    if not email or not password:
+        return Response({"error": "Please enter both email and password."}, status=400)
+
+    # Use Django's secure `authenticate` function.
+    # It will handle finding the user and checking the password.
+    # We pass the email from the request as the 'username' parameter for authentication.
+    user = authenticate(request, username=email, password=password)
+    
+    if user is None: # This means the password was incorrect
+        return Response({"error": "Invalid credentials."}, status=401)
+
+    try:
+        # 1. Verify the user is a driver through their profile.
+        driver_profile = user.profile
+        if not driver_profile.is_driver:
+            return Response({"error": "This user is not a driver."}, status=403)
+
+        # 2. Find the bus assigned to this driver and the latest route.
+        bus = Bus.objects.get(driver=driver_profile)
+        latest_trip = Trip.objects.filter(bus=bus).order_by('-departure_time').first()
+        if not latest_trip:
+            return Response({"error": "No trips assigned to this driver's bus."}, status=404)
+
+        return Response({ "driver_name": user.get_full_name() or user.username, "bus_id": str(bus.id), "route_id": str(latest_trip.route.id) })
+    except CustomUserProfile.DoesNotExist:
+        return Response({"error": "Driver profile not found for this user."}, status=404)
+    except Bus.DoesNotExist:
+        return Response({"error": "No bus assigned to this driver."}, status=404)
+
+@api_view(['POST'])
+def update_bus_location(request):
+    """
+    Updates the real-time location of a bus.
+    Expected POST data: {'bus_id': '...', 'latitude': '...', 'longitude': '...'}
+    """
+    bus_id = request.data.get('bus_id')
+    latitude = request.data.get('latitude')
+    longitude = request.data.get('longitude')
+
+    if not all([bus_id, latitude, longitude]):
+        return Response({"error": "bus_id, latitude, and longitude are required."}, status=400)
+
+    try:
+        bus = Bus.objects.get(pk=bus_id)
+        bus.current_location = Point(float(longitude), float(latitude), srid=4326)
+        bus.last_reported_at = timezone.now()
+        bus.save(update_fields=['current_location', 'last_reported_at'])
+        
+        return Response({"status": "success", "message": f"Location for bus {bus.plate_number} updated."})
+
+    except Bus.DoesNotExist:
+        return Response({"error": f"Bus with id {bus_id} not found."}, status=404)
+    except (ValueError, TypeError) as e:
+        return Response({"error": f"Invalid data provided: {e}"}, status=400)
 
 
 

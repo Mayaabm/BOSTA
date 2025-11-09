@@ -17,7 +17,8 @@ class RouteService {
   }
 
   static Future<AppRoute> getRouteById(String id) async {
-    final url = Uri.parse('${ApiEndpoints.routes}/$id');
+    // The backend endpoint for a single route is the same as the list, with an ID query param.
+    final url = Uri.parse('${ApiEndpoints.routes}?id=$id');
     final response = await http.get(url);
 
     if (response.statusCode == 200) {

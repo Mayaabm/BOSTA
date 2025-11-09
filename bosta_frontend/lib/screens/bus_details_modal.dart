@@ -1,17 +1,22 @@
 import 'dart:async';
 import 'package:flutter/material.dart';
 import 'package:google_fonts/google_fonts.dart';
+import 'package:intl/intl.dart';
 
+import '../models/user_location.dart';
 import '../models/bus.dart';
+import '../services/bus_service.dart';
 
 class BusDetailsModal extends StatefulWidget {
   final String busId;
   final VoidCallback onChooseBus;
 
+  final UserLocation? userLocation;
   const BusDetailsModal({
     super.key,
     required this.busId,
     required this.onChooseBus,
+    this.userLocation,
   });
 
   @override
@@ -19,40 +24,93 @@ class BusDetailsModal extends StatefulWidget {
 }
 
 class _BusDetailsModalState extends State<BusDetailsModal> {
-  Future<Bus>? _busDetailsFuture;
+  Bus? _busDetails;
+  String? _errorMessage;
+  bool _isLoading = true;
+  Timer? _updateTimer;
+
+  // Trip status
+  String _tripStatus = "On Route";
+  double _tripProgress = 0.0;
 
   @override
   void initState() {
     super.initState();
     _fetchBusDetails();
-  }
-
-  void _fetchBusDetails() {
-    setState(() {
-      // This is a mock fetch. In a real app, you would call a service like:
-      // _busDetailsFuture = BusService.getBusDetails(widget.busId);
-      _busDetailsFuture = _mockFetchBusDetails(widget.busId);
+    // Start periodic updates
+    _updateTimer = Timer.periodic(const Duration(seconds: 5), (timer) {
+      _fetchBusDetails(showLoading: false);
     });
   }
 
-  // Mock function to simulate fetching bus details.
-  Future<Bus> _mockFetchBusDetails(String busId) async {
-    await Future.delayed(const Duration(seconds: 1));
-    // Simulate a potential error for demonstration
-    // if (Random().nextDouble() < 0.3) {
-    //   throw Exception("Failed to load bus details");
-    // }
-    return Bus(
-      id: busId,
-      plateNumber: 'B 12345',
-      latitude: 34.12,
-      longitude: 35.65,
-      speed: 45.0,
-      routeName: 'Jbeil - Batroun',
-      // Mocked driver details
-      driverName: 'John Doe',
-      driverRating: 4.8,
-    );
+  @override
+  void dispose() {
+    _updateTimer?.cancel();
+    super.dispose();
+  }
+
+  Future<void> _fetchBusDetails({bool showLoading = true}) async {
+    if (showLoading && mounted) setState(() => _isLoading = true);
+    try {
+      final bus = await BusService.getBusDetails(widget.busId, userLocation: widget.userLocation);
+      if (mounted) {
+        setState(() {
+          _busDetails = bus;
+          _isLoading = false;
+          _errorMessage = null;
+          _updateTripStatus(bus);
+        });
+      }
+    } catch (e) {
+      if (mounted) {
+        setState(() {
+          _isLoading = false;
+          _errorMessage = "Bus has completed its trip or is offline.";
+        });
+      }
+    }
+  }
+
+  void _updateTripStatus(Bus bus) {
+    // Check for trip completion first
+    if (bus.lastReportedAt != null) {
+      final lastReportTime = DateFormat("yyyy-MM-dd'T'HH:mm:ss.SSSSSS'Z'").parse(bus.lastReportedAt!, true).toLocal();
+      // If bus hasn't reported in over 5 minutes, consider it offline/completed
+      if (DateTime.now().difference(lastReportTime).inMinutes > 5) {
+        _tripStatus = "Completed";
+        _tripProgress = 1.0;
+        return;
+      }
+    }
+
+    // Determine status based on distance
+    if (bus.distanceMeters != null && bus.distanceMeters! <= 300) {
+      _tripStatus = "Arriving"; // Within 300m of the rider
+    } else {
+      _tripStatus = "On Route";
+    }
+
+    // This is a mock progress calculation assuming a 30-minute trip.
+    // A real implementation would use total route distance vs. distance covered.
+    if (bus.lastReportedAt != null) {
+      try {
+        final now = DateTime.now();
+        // Assume the trip started within the last 30 minutes for this simulation.
+        final tripStartTime = now.subtract(const Duration(minutes: 30));
+        final lastReportTime = DateFormat("yyyy-MM-dd'T'HH:mm:ss.SSSSSS'Z'").parse(bus.lastReportedAt!, true).toLocal();
+
+        // Calculate progress based on how much of the 30-minute window has passed since the trip started.
+        if (lastReportTime.isAfter(tripStartTime)) {
+          final elapsedSeconds = lastReportTime.difference(tripStartTime).inSeconds;
+          _tripProgress = elapsedSeconds / (30 * 60); // 30 minutes in seconds
+          if (_tripProgress > 1.0) _tripProgress = 1.0;
+          if (_tripProgress < 0.0) _tripProgress = 0.0;
+        }
+      } catch (e) {
+        debugPrint("Could not parse lastReportedAt or calculate trip progress: $e");
+        _tripProgress = 0.0; // Default to 0 on error
+      }
+    }
   }
 
   @override
@@ -64,19 +122,13 @@ class _BusDetailsModalState extends State<BusDetailsModal> {
         decoration: BoxDecoration(
           color: const Color(0xFF0B0E11).withOpacity(0.95),
         ),
-        child: FutureBuilder<Bus>(
-          future: _busDetailsFuture,
-          builder: (context, snapshot) {
-            if (snapshot.connectionState == ConnectionState.waiting) {
-              return _buildLoadingState();
-            } else if (snapshot.hasError) {
-              return _buildErrorState();
-            } else if (snapshot.hasData) {
-              return _buildLoadedState(snapshot.data!);
-            }
-            return const SizedBox.shrink();
-          },
-        ),
+        child: _isLoading
+            ? _buildLoadingState()
+            : _errorMessage != null
+                ? _buildErrorState()
+                : _busDetails != null
+                    ? _buildLoadedState(_busDetails!)
+                    : const SizedBox.shrink(),
       ),
     );
   }
@@ -102,11 +154,11 @@ class _BusDetailsModalState extends State<BusDetailsModal> {
           const Icon(Icons.cloud_off, color: Colors.white54, size: 48),
           const SizedBox(height: 16),
           Text(
-            'Failed to load details',
+            _errorMessage ?? 'Failed to load details',
             style: GoogleFonts.urbanist(color: Colors.white, fontSize: 18),
           ),
           const SizedBox(height: 16),
-          ElevatedButton(
+          if (_errorMessage != "Bus has completed its trip or is offline.") ElevatedButton(
             onPressed: _fetchBusDetails,
             style: ElevatedButton.styleFrom(backgroundColor: const Color(0xFF2ED8C3)),
             child: const Text('Retry', style: TextStyle(color: Colors.black)),
@@ -141,6 +193,32 @@ class _BusDetailsModalState extends State<BusDetailsModal> {
           Text(
             bus.routeName ?? 'Unknown Route',
             style: GoogleFonts.urbanist(fontSize: 16, color: Colors.white70),
+          ),
+          const SizedBox(height: 16),
+          // Progress Bar and Status
+          Row(
+            children: [
+              Expanded(
+                child: ClipRRect(
+                  borderRadius: BorderRadius.circular(8),
+                  child: LinearProgressIndicator(
+                    value: _tripProgress,
+                    backgroundColor: Colors.grey.shade800,
+                    valueColor: const AlwaysStoppedAnimation<Color>(Color(0xFF2ED8C3)),
+                    minHeight: 8,
+                  ),
+                ),
+              ),
+              const SizedBox(width: 12),
+              Container(
+                padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
+                decoration: BoxDecoration(
+                  color: _tripStatus == "Completed" ? Colors.grey.shade700 : const Color(0xFF2ED8C3),
+                  borderRadius: BorderRadius.circular(6),
+                ),
+                child: Text(_tripStatus, style: GoogleFonts.urbanist(color: _tripStatus == "Completed" ? Colors.white70 : Colors.black, fontWeight: FontWeight.bold, fontSize: 12)),
+              ),
+            ],
           ),
           const SizedBox(height: 32),
           // Driver Info
@@ -189,9 +267,9 @@ class _BusDetailsModalState extends State<BusDetailsModal> {
           Row(
             mainAxisAlignment: MainAxisAlignment.spaceAround,
             children: [
-              _buildStatColumn('ETA to Pickup', '5 min'),
-              _buildStatColumn('ETA to Dest.', '25 min'),
-              _buildStatColumn('Avg. Speed', '${bus.speed.toStringAsFixed(0)} km/h'),
+              _buildStatColumn('ETA to You', bus.eta?.toMinutesString() ?? '...'),
+              _buildStatColumn('Distance', bus.distanceMeters != null ? '${(bus.distanceMeters! / 1000).toStringAsFixed(1)} km' : '...'),
+              _buildStatColumn('Speed', '${(bus.speed ?? 0.0).toStringAsFixed(0)} km/h'),
             ],
           ),
           const Spacer(),

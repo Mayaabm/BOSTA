@@ -5,6 +5,7 @@ import 'package:google_fonts/google_fonts.dart';
 import 'package:provider/provider.dart';
 
 import '../services/auth_service.dart';
+import 'dart:convert';
 
 class AuthScreen extends StatefulWidget {
   const AuthScreen({super.key});
@@ -65,6 +66,40 @@ class _AuthScreenState extends State<AuthScreen> {
           _isLoading = false;
         });
       }
+    }
+  }
+
+  Future<void> _loginAsDriver() async {
+    if (_isLoading || !_formKey.currentState!.validate()) return;
+
+    setState(() {
+      _isLoading = true;
+      _errorMessage = null;
+    });
+
+    final authService = Provider.of<AuthService>(context, listen: false);
+
+    // The method now returns an error string on failure, or null on success.
+    final errorBody = await authService.loginAsDriver(
+      _emailController.text,
+      _passwordController.text,
+    );
+
+    if (mounted) {
+      setState(() {
+        if (errorBody != null) {
+          // We have an error from the backend.
+          try {
+            final decoded = json.decode(errorBody);
+            _errorMessage = decoded['error'] ?? "An unknown error occurred.";
+          } catch (_) {
+            _errorMessage = "Failed to parse server response. Please try again.";
+          }
+        }
+        // If errorBody is null, login was successful and the redirect will happen automatically.
+        // We only need to stop the loading indicator if there was an error.
+        _isLoading = false;
+      });
     }
   }
 
@@ -160,11 +195,7 @@ class _AuthScreenState extends State<AuthScreen> {
                         child: const Text('Create an Account'),
                       ),
                       TextButton(
-                        onPressed: () {
-                          ScaffoldMessenger.of(context).showSnackBar(
-                            const SnackBar(content: Text('Driver login flow coming soon!')),
-                          );
-                        },
+                        onPressed: _loginAsDriver,
                         child: const Text('Continue as Driver'),
                       ),
                     ],
