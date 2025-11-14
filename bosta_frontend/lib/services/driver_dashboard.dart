@@ -1,15 +1,19 @@
 import 'dart:async';
+import 'dart:convert';
 
 import 'package:bosta_frontend/models/bus.dart';
 import 'package:bosta_frontend/services/auth_service.dart';
 import 'package:bosta_frontend/models/route_model.dart';
 import 'package:bosta_frontend/services/bus_service.dart';
+import 'package:bosta_frontend/services/api_endpoints.dart';
 import 'package:bosta_frontend/services/route_service.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_map/flutter_map.dart';
 import 'package:geolocator/geolocator.dart';
 import 'package:google_fonts/google_fonts.dart';
+import 'package:http/http.dart' as http;
 import 'package:latlong2/latlong.dart';
+import 'package:provider/provider.dart';
 
 enum DriverStatus { offline, online }
 
@@ -58,16 +62,30 @@ class _DriverDashboardScreenState extends State<DriverDashboardScreen> {
       return;
     }
     try {
-      // Fetch assigned bus and route concurrently
-      final results = await Future.wait([
-        BusService.getBusById(widget.driverInfo!.busId),
-        RouteService.getRouteById(widget.driverInfo!.routeId),
-      ]);
+      // Get the authentication token from the AuthService using Provider.
+      final authService = Provider.of<AuthService>(context, listen: false);
+      final String? authToken = authService.currentState.token;
+
+      if (authToken == null) {
+        throw Exception('Authentication token not found. Please log in again.');
+      }
+
+      final uri = Uri.parse(ApiEndpoints.driverProfile);
+      final response = await http.get(uri, headers: {
+        'Content-Type': 'application/json',
+        'Authorization': 'Token $authToken', // Send the token to the backend.
+      });
+
+      if (response.statusCode != 200) {
+        throw Exception('Failed to load driver profile: ${response.body}');
+      }
+
+      final data = json.decode(response.body);
 
       if (mounted) {
         setState(() {
-          _assignedBus = results[0] as Bus;
-          _assignedRoute = results[1] as AppRoute;
+          _assignedBus = Bus.fromJson(data['bus']);
+          _assignedRoute = AppRoute.fromJson(data['route']);
           _isLoading = false;
         });
         _centerOnRoute();
@@ -76,7 +94,7 @@ class _DriverDashboardScreenState extends State<DriverDashboardScreen> {
       if (mounted) {
         setState(() {
           _isLoading = false;
-          _errorMessage = "Failed to load driver data. Please try again.";
+          _errorMessage = "Failed to load driver data:\n${e.toString()}";
         });
         debugPrint("Error loading driver data: $e");
       }

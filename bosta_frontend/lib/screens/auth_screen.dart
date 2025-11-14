@@ -1,11 +1,10 @@
-import 'dart:async';
-
+import 'package:bosta_frontend/screens/driver_dashboard_screen.dart';
+import 'package:bosta_frontend/screens/register_screen.dart';
+import 'package:bosta_frontend/screens/rider_home_screen.dart';
 import 'package:flutter/material.dart';
 import 'package:google_fonts/google_fonts.dart';
 import 'package:provider/provider.dart';
-
 import '../services/auth_service.dart';
-import 'dart:convert';
 
 class AuthScreen extends StatefulWidget {
   const AuthScreen({super.key});
@@ -19,19 +18,57 @@ class _AuthScreenState extends State<AuthScreen> {
   final _emailController = TextEditingController();
   final _passwordController = TextEditingController();
 
+  // State for the role selection toggle
+  UserRole _selectedRole = UserRole.rider;
   bool _isLoading = false;
   String? _errorMessage;
-  double _opacity = 0.0;
 
-  @override
-  void initState() {
-    super.initState();
-    // Start the fade-in animation after a short delay
-    Future.delayed(const Duration(milliseconds: 300), () {
-      if (mounted) {
-        setState(() => _opacity = 1.0);
-      }
+  Future<void> _submitForm() async {
+    // Hide keyboard and validate form
+    FocusScope.of(context).unfocus();
+    if (!(_formKey.currentState?.validate() ?? false)) {
+      return;
+    }
+
+    setState(() {
+      _isLoading = true;
+      _errorMessage = null;
     });
+
+    final authService = Provider.of<AuthService>(context, listen: false);
+    String? error;
+
+    try {
+      if (_selectedRole == UserRole.driver) {
+        error = await authService.loginAsDriver(
+          _emailController.text,
+          _passwordController.text,
+        );
+      } else {
+        error = await authService.loginAsRider(
+          _emailController.text,
+          _passwordController.text,
+        );
+      }
+
+      if (error == null) {
+        // Success! Navigation will be handled by a listener or redirect logic.
+        // For this example, we navigate directly.
+        if (!mounted) return;
+        final destination = _selectedRole == UserRole.driver
+            ? DriverDashboardScreen(driverInfo: authService.currentState.driverInfo)
+            : const RiderHomeScreen();
+        Navigator.of(context).pushReplacement(MaterialPageRoute(builder: (_) => destination));
+      } else {
+        // Failure: show the error message.
+        if (!mounted) return;
+        setState(() => _errorMessage = error);
+      }
+    } finally {
+      if (mounted) {
+        setState(() => _isLoading = false);
+      }
+    }
   }
 
   @override
@@ -41,171 +78,162 @@ class _AuthScreenState extends State<AuthScreen> {
     super.dispose();
   }
 
-  Future<void> _login() async {
-    if (_isLoading || !_formKey.currentState!.validate()) return;
-
-    setState(() {
-      _isLoading = true;
-      _errorMessage = null;
-    });
-
-    final authService = Provider.of<AuthService>(context, listen: false);
-
-    try {
-      // The login call will trigger a state change in AuthService.
-      // GoRouter's redirect logic will handle navigation automatically.
-      await authService.login(
-        _emailController.text,
-        _passwordController.text,
-      );
-      // On success, the screen will be replaced, so no need to set _isLoading back to false.
-    } catch (e) {
-      if (mounted) {
-        setState(() {
-          _errorMessage = "Invalid credentials or network issue.";
-          _isLoading = false;
-        });
-      }
-    }
-  }
-
-  Future<void> _loginAsDriver() async {
-    if (_isLoading || !_formKey.currentState!.validate()) return;
-
-    setState(() {
-      _isLoading = true;
-      _errorMessage = null;
-    });
-
-    final authService = Provider.of<AuthService>(context, listen: false);
-
-    // The method now returns an error string on failure, or null on success.
-    final errorBody = await authService.loginAsDriver(
-      _emailController.text,
-      _passwordController.text,
-    );
-
-    if (mounted) {
-      setState(() {
-        if (errorBody != null) {
-          // We have an error from the backend.
-          try {
-            final decoded = json.decode(errorBody);
-            _errorMessage = decoded['error'] ?? "An unknown error occurred.";
-          } catch (_) {
-            _errorMessage = "Failed to parse server response. Please try again.";
-          }
-        }
-        // If errorBody is null, login was successful and the redirect will happen automatically.
-        // We only need to stop the loading indicator if there was an error.
-        _isLoading = false;
-      });
-    }
-  }
-
   @override
   Widget build(BuildContext context) {
-    final colorScheme = Theme.of(context).colorScheme;
-    final textTheme = Theme.of(context).textTheme;
-
     return Scaffold(
-      body: Center(
+      backgroundColor: const Color(0xFF12161A),
+      body: SafeArea(
         child: SingleChildScrollView(
-          padding: const EdgeInsets.symmetric(horizontal: 32, vertical: 48),
-          child: AnimatedOpacity(
-            opacity: _opacity,
-            duration: const Duration(seconds: 1),
-            child: Form(
-              key: _formKey,
-              child: Column(
-                mainAxisAlignment: MainAxisAlignment.center,
-                crossAxisAlignment: CrossAxisAlignment.stretch,
-                children: [
-                  Text(
-                    'BOSTA',
-                    textAlign: TextAlign.center,
+          padding: const EdgeInsets.symmetric(horizontal: 24.0),
+          child: Form(
+            key: _formKey,
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.stretch,
+              children: [
+                const SizedBox(height: 60),
+                Text(
+                  'Welcome Back',
+                  textAlign: TextAlign.center,
+                  style: GoogleFonts.urbanist(
+                    fontSize: 32,
+                    fontWeight: FontWeight.bold,
+                    color: Colors.white,
+                  ),
+                ),
+                const SizedBox(height: 10),
+                Text(
+                  'Log in to continue your journey.',
+                  textAlign: TextAlign.center,
+                  style: GoogleFonts.urbanist(
+                    fontSize: 16,
+                    color: Colors.grey[400],
+                  ),
+                ),
+                const SizedBox(height: 40),
+                _buildRoleSelector(),
+                const SizedBox(height: 20),
+                _buildTextField(_emailController, 'Email Address', Icons.email_outlined, keyboardType: TextInputType.emailAddress),
+                const SizedBox(height: 20),
+                _buildTextField(_passwordController, 'Password', Icons.lock_outline, obscureText: true, onFieldSubmitted: (_) => _submitForm()),
+                const SizedBox(height: 30),
+                if (_errorMessage != null)
+                  Padding(
+                    padding: const EdgeInsets.only(bottom: 16.0),
+                    child: Text(_errorMessage!, style: const TextStyle(color: Colors.red, fontSize: 14), textAlign: TextAlign.center),
+                  ),
+                _isLoading
+                    ? const Center(child: CircularProgressIndicator(color: Color(0xFF2ED8C3)))
+                    : ElevatedButton(
+                        onPressed: _submitForm,
+                        style: ElevatedButton.styleFrom(
+                          backgroundColor: const Color(0xFF2ED8C3),
+                          padding: const EdgeInsets.symmetric(vertical: 16),
+                          shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
+                        ),
+                        child: Text(
+                          'Log In',
+                          style: GoogleFonts.urbanist(fontSize: 18, fontWeight: FontWeight.bold, color: Colors.black),
+                        ),
+                      ),
+                const SizedBox(height: 20),
+                TextButton(
+                  onPressed: () {
+                    Navigator.of(context).push(
+                      MaterialPageRoute(builder: (context) => const RegisterScreen()),
+                    );
+                  },
+                  child: Text(
+                    "Don't have an account? Sign Up",
                     style: GoogleFonts.urbanist(
-                      fontSize: 42,
-                      fontWeight: FontWeight.bold,
-                      color: colorScheme.primary,
+                      color: const Color(0xFF2ED8C3),
+                      fontWeight: FontWeight.w600,
                     ),
                   ),
-                  const SizedBox(height: 8),
-                  Text(
-                    'Smart Bus Transit',
-                    textAlign: TextAlign.center,
-                    style: textTheme.titleMedium?.copyWith(
-                      color: Colors.white70,
-                      fontWeight: FontWeight.w500,
-                    ),
-                  ),
-                  const SizedBox(height: 48),
-                  TextFormField(
-                    controller: _emailController,
-                    decoration: const InputDecoration(hintText: 'Email or Phone'),
-                    keyboardType: TextInputType.emailAddress,
-                    textInputAction: TextInputAction.next,
-                    validator: (value) => (value?.isEmpty ?? true) ? 'Please enter your email or phone' : null,
-                  ),
-                  const SizedBox(height: 16),
-                  TextFormField(
-                    controller: _passwordController,
-                    decoration: const InputDecoration(hintText: 'Password'),
-                    obscureText: true,
-                    textInputAction: TextInputAction.done,
-                    onFieldSubmitted: (_) => _login(),
-                    validator: (value) => (value?.isEmpty ?? true) ? 'Please enter your password' : null,
-                  ),
-                  const SizedBox(height: 24),
-                  if (_errorMessage != null)
-                    Padding(
-                      padding: const EdgeInsets.only(bottom: 16.0),
-                      child: Text(
-                        _errorMessage!,
-                        textAlign: TextAlign.center,
-                        style: TextStyle(color: colorScheme.error, fontWeight: FontWeight.w600),
-                      ),
-                    ),
-                  SizedBox(
-                    height: 50,
-                    child: ElevatedButton(
-                      onPressed: _login,
-                      child: _isLoading
-                          ? const SizedBox(
-                              height: 24,
-                              width: 24,
-                              child: CircularProgressIndicator(
-                                color: Colors.black,
-                                strokeWidth: 3,
-                              ),
-                            )
-                          : const Text('Login'),
-                    ),
-                  ),
-                  const SizedBox(height: 24),
-                  Row(
-                    mainAxisAlignment: MainAxisAlignment.spaceBetween,
-                    children: [
-                      TextButton(
-                        onPressed: () {
-                          ScaffoldMessenger.of(context).showSnackBar(
-                            const SnackBar(content: Text('Account creation coming soon!')),
-                          );
-                        },
-                        child: const Text('Create an Account'),
-                      ),
-                      TextButton(
-                        onPressed: _loginAsDriver,
-                        child: const Text('Continue as Driver'),
-                      ),
-                    ],
-                  ),
-                ],
-              ),
+                ),
+              ],
             ),
           ),
         ),
       ),
+    );
+  }
+
+  Widget _buildRoleSelector() {
+    return Container(
+      decoration: BoxDecoration(
+        color: const Color(0xFF1F2327),
+        borderRadius: BorderRadius.circular(12),
+      ),
+      child: Row(
+        children: [
+          _buildRoleOption(UserRole.rider, 'Rider'),
+          _buildRoleOption(UserRole.driver, 'Driver'),
+        ],
+      ),
+    );
+  }
+
+  Widget _buildRoleOption(UserRole role, String title) {
+    final isSelected = _selectedRole == role;
+    return Expanded(
+      child: GestureDetector(
+        onTap: () {
+          if (!_isLoading) {
+            setState(() => _selectedRole = role);
+          }
+        },
+        child: AnimatedContainer(
+          duration: const Duration(milliseconds: 200),
+          padding: const EdgeInsets.symmetric(vertical: 12),
+          decoration: BoxDecoration(
+            color: isSelected ? const Color(0xFF2ED8C3) : Colors.transparent,
+            borderRadius: BorderRadius.circular(12),
+          ),
+          child: Text(
+            title,
+            textAlign: TextAlign.center,
+            style: GoogleFonts.urbanist(
+              fontWeight: FontWeight.bold,
+              color: isSelected ? Colors.black : Colors.white70,
+            ),
+          ),
+        ),
+      ),
+    );
+  }
+
+  Widget _buildTextField(TextEditingController controller, String label, IconData icon, {bool obscureText = false, TextInputType? keyboardType, Function(String)? onFieldSubmitted}) {
+    return TextFormField(
+      controller: controller,
+      obscureText: obscureText,
+      keyboardType: keyboardType,
+      onFieldSubmitted: onFieldSubmitted,
+      textInputAction: onFieldSubmitted != null ? TextInputAction.done : TextInputAction.next,
+      style: const TextStyle(color: Colors.white),
+      decoration: InputDecoration(
+        labelText: label,
+        labelStyle: TextStyle(color: Colors.grey[400]),
+        prefixIcon: Icon(icon, color: Colors.grey[400]),
+        filled: true,
+        fillColor: const Color(0xFF1F2327),
+        border: OutlineInputBorder(
+          borderRadius: BorderRadius.circular(12),
+          borderSide: BorderSide.none,
+        ),
+        focusedBorder: OutlineInputBorder(
+          borderRadius: BorderRadius.circular(12),
+          borderSide: const BorderSide(color: Color(0xFF2ED8C3)),
+        ),
+      ),
+      validator: (value) {
+        if (value == null || value.isEmpty) {
+          return '$label is required';
+        }
+        if (label.contains('Email') && !RegExp(r'^[^@]+@[^@]+\.[^@]+').hasMatch(value)) {
+          return 'Please enter a valid email';
+        }
+        return null;
+      },
     );
   }
 }

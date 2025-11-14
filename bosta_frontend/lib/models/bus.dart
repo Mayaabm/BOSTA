@@ -15,7 +15,7 @@ class EtaDuration {
 
   String toMinutesString() {
     if (hours > 0) return '${hours}h ${minutes}m';
-    if (minutes > 0) return '${minutes} min';
+    if (minutes > 0) return '$minutes min';
     return '<1 min';
   }
 }

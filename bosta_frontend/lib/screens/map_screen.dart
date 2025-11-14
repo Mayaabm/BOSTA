@@ -10,6 +10,7 @@ import 'transit_tokens.dart';
 import '../models/bus.dart';
 import '../models/route_model.dart';
 import '../models/stop_model.dart';
+import '../models/eta_response.dart';
 import 'bus_simulation.dart';
 
 // Set to false to see your database routes. Set to true for the old animation.
@@ -155,7 +156,7 @@ class _MapScreenState extends State<MapScreen> with TickerProviderStateMixin {
     if (_selectedBus == null || _currentPosition == null) return;
 
     try {
-      final eta = await BusService.getEta(
+      final EtaResponse eta = await BusService.getEta(
         busId: _selectedBus!.id,
         targetLat: _currentPosition!.latitude,
         targetLon: _currentPosition!.longitude,

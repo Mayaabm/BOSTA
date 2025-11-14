@@ -162,7 +162,22 @@ class _RiderHomeScreenState extends State<RiderHomeScreen> with TickerProviderSt
           (event is MapEventMove ||
               event is MapEventRotate ||
               event is MapEventDoubleTapZoom)) {
-        if (event.source == MapEventSource.fromInput) {
+        // This function safely checks if the event was triggered by user input,
+        // handling breaking changes across flutter_map versions.
+        bool isUserInput(MapEvent event) {
+          // flutter_map v6+ uses `MapEventSource.input`
+          // flutter_map v5 used `MapEventSource.fromInput`
+          // Older versions might use `MapEventSource.tap` or `MapEventSource.drag`
+          final sourceName = event.source.toString().split('.').last;
+          return sourceName == 'input' ||
+                 sourceName == 'fromInput' ||
+                 sourceName == 'tap' ||
+                 sourceName == 'drag' ||
+                 sourceName == 'doubleTap' ||
+                 sourceName == 'longPress';
+        }
+
+        if (isUserInput(event)) {
           setState(() => _isAutoCentering = false);
         }
       }
@@ -224,7 +239,7 @@ class _RiderHomeScreenState extends State<RiderHomeScreen> with TickerProviderSt
     });
 
     // Start polling for this specific bus's details
-    _selectedBusDetailsTimer = Timer.periodic(const Duration(seconds: 5), (timer) {
+    _selectedBusDetailsTimer = Timer.periodic(const Duration(seconds: 3), (timer) {
       _fetchSelectedBusDetails(bus.id);
     });
   }

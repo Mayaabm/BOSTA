@@ -1,6 +1,7 @@
 import 'dart:convert';
 import 'package:http/http.dart' as http;
 import '../models/bus.dart';
+import '../models/eta_response.dart';
 import '../models/user_location.dart';
 import 'api_endpoints.dart';
 
@@ -92,6 +93,25 @@ class BusService {
       return data.map((json) => Bus.fromJson(json)).toList();
     } else {
       throw Exception('Failed to load buses to destination');
+    }
+  }
+
+  /// Fetches ETA for a bus to a target location.
+  static Future<EtaResponse> getEta({
+    required String busId,
+    required double targetLat,
+    required double targetLon,
+  }) async {
+    final uri = Uri.parse(
+        '${ApiEndpoints.eta}?bus_id=$busId&target_lat=$targetLat&target_lon=$targetLon');
+    final response = await http.get(uri);
+
+    if (response.statusCode == 200) {
+      final data = json.decode(response.body);
+      return EtaResponse.fromJson(data);
+    } else {
+      throw Exception(
+          'Failed to get ETA for bus $busId: ${response.statusCode} ${response.body}');
     }
   }
 }
