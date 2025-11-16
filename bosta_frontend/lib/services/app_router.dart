@@ -2,7 +2,7 @@ import 'package:flutter/material.dart';
 import 'package:go_router/go_router.dart';
 import '../screens/auth_screen.dart';
 import 'driver_dashboard.dart';
-import 'package:provider/provider.dart';
+import '../screens/driver_onboarding_screen.dart';
 import '../screens/rider_home_screen.dart';
 import 'auth_service.dart';
 
@@ -12,7 +12,7 @@ class AppRouter {
   AppRouter(AuthService authService) {
     router = GoRouter(
       refreshListenable: authService,
-      initialLocation: '/rider/home',
+      initialLocation: '/auth',
       routes: [
         GoRoute(
           path: '/auth',
@@ -25,25 +25,37 @@ class AppRouter {
         GoRoute(
           path: '/driver/dashboard',
           builder: (context, state) {
-            // Pass the driver info from the auth state to the dashboard screen.
-            // Fetch directly from the provider, which is the source of truth during a redirect.
-            final authService = Provider.of<AuthService>(context, listen: false);
-            return DriverDashboardScreen(driverInfo: authService.currentState.driverInfo);
+            return const DriverDashboardScreen();
           },
+        ),
+        GoRoute(
+          path: '/driver/onboarding',
+          builder: (context, state) => const DriverOnboardingScreen(),
         ),
       ],
       redirect: (BuildContext context, GoRouterState state) {
         final authState = authService.currentState;
         final bool onAuthRoute = state.matchedLocation == '/auth';
+        final bool onOnboardingRoute = state.matchedLocation == '/driver/onboarding';
 
+        // If user is not authenticated, redirect to auth screen, unless they are already there.
         if (!authState.isAuthenticated) {
           return onAuthRoute ? null : '/auth';
         }
 
-        if (authState.isAuthenticated && onAuthRoute) {
-          return authState.role == UserRole.driver
-              ? '/driver/dashboard'
-              : '/rider/home';
+        // If user is authenticated...
+        if (authState.role == UserRole.driver) {
+          final driverInfo = authState.driverInfo;
+          // If driver info is missing or onboarding is not complete, redirect to onboarding.
+          if (driverInfo == null || !driverInfo.onboardingComplete) {
+            return onOnboardingRoute ? null : '/driver/onboarding';
+          }
+          // If onboarding is complete and they are on the auth/onboarding page, go to dashboard.
+          if (onAuthRoute || onOnboardingRoute) {
+            return '/driver/dashboard';
+          }
+        } else if (authState.role == UserRole.rider && onAuthRoute) {
+          return '/rider/home';
         }
 
         // If the user is authenticated but on a route that doesn't match their role, redirect them.

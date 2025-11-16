@@ -17,7 +17,7 @@ class DriverDashboardScreen extends StatelessWidget {
             const Text('Welcome, Driver!', style: TextStyle(fontSize: 24)),
             const SizedBox(height: 20),
             if (driverInfo != null) ...[
-              Text('Name: ${driverInfo!.driverName}', style: const TextStyle(fontSize: 18)),
+              Text('Name: ${driverInfo!.firstName} ${driverInfo!.lastName}', style: const TextStyle(fontSize: 18)),
               Text('Bus ID: ${driverInfo!.busId}', style: const TextStyle(fontSize: 18)),
               Text('Route ID: ${driverInfo!.routeId}', style: const TextStyle(fontSize: 18)),
             ] else

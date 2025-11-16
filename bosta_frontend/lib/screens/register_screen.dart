@@ -1,9 +1,9 @@
-import 'package:bosta_frontend/screens/driver_dashboard_screen.dart';
-import 'package:bosta_frontend/screens/rider_home_screen.dart';
 import 'package:flutter/material.dart';
 import 'package:google_fonts/google_fonts.dart';
 import 'package:provider/provider.dart';
 import '../services/auth_service.dart';
+import 'driver_dashboard_screen.dart';
+import 'rider_home_screen.dart';
 
 class RegisterScreen extends StatefulWidget {
   const RegisterScreen({super.key});
@@ -34,24 +34,29 @@ class _RegisterScreenState extends State<RegisterScreen> {
     });
 
     final authService = Provider.of<AuthService>(context, listen: false);
+    String? error;
 
     try {
-      final error = await authService.register(
+      final registrationError = await authService.register(
         username: _usernameController.text,
         email: _emailController.text,
         password: _passwordController.text,
         role: _selectedRole,
       );
 
-      if (!mounted) return;
+      if (registrationError == null) {
+        // After successful registration, immediately log in to get the auth token
+        // and trigger the profile fetch and redirect logic.
+        if (_selectedRole == UserRole.driver) {
+          error = await authService.loginAsDriver(_emailController.text, _passwordController.text);
+        }
+      }
+
 
       if (error == null) {
-        // On success, navigate to the correct screen
-        final destination = _selectedRole == UserRole.driver
-            ? DriverDashboardScreen(driverInfo: authService.currentState.driverInfo)
-            : const RiderHomeScreen();
-        Navigator.of(context).pushReplacement(MaterialPageRoute(builder: (_) => destination));
+        // Success! Navigation is now handled by the AppRouter's redirect logic.
       } else {
+        if (!mounted) return;
         setState(() => _errorMessage = error);
       }
     } finally {
@@ -102,7 +107,6 @@ class _RegisterScreenState extends State<RegisterScreen> {
                 _buildRoleSelector(),
                 const SizedBox(height: 20),
                 _buildTextField(_usernameController, 'Username', Icons.person_outline),
-                const SizedBox(height: 20),
                 _buildTextField(_emailController, 'Email Address', Icons.email_outlined, keyboardType: TextInputType.emailAddress),
                 const SizedBox(height: 20),
                 _buildTextField(_passwordController, 'Password', Icons.lock_outline, obscureText: true, onFieldSubmitted: (_) => _submitForm()),
@@ -126,6 +130,7 @@ class _RegisterScreenState extends State<RegisterScreen> {
                           style: GoogleFonts.urbanist(fontSize: 18, fontWeight: FontWeight.bold, color: Colors.black),
                         ),
                       ),
+                const SizedBox(height: 20),
               ],
             ),
           ),
@@ -139,8 +144,8 @@ class _RegisterScreenState extends State<RegisterScreen> {
       decoration: BoxDecoration(color: const Color(0xFF1F2327), borderRadius: BorderRadius.circular(12)),
       child: Row(
         children: [
-          _buildRoleOption(UserRole.rider, 'Rider'),
-          _buildRoleOption(UserRole.driver, 'Driver'),
+          _buildRoleOption(UserRole.rider, 'I\'m a Rider'),
+          _buildRoleOption(UserRole.driver, 'I\'m a Driver'),
         ],
       ),
     );
@@ -150,7 +155,11 @@ class _RegisterScreenState extends State<RegisterScreen> {
     final isSelected = _selectedRole == role;
     return Expanded(
       child: GestureDetector(
-        onTap: () => !_isLoading ? setState(() => _selectedRole = role) : null,
+        onTap: () {
+          if (!_isLoading) {
+            setState(() => _selectedRole = role);
+          }
+        },
         child: AnimatedContainer(
           duration: const Duration(milliseconds: 200),
           padding: const EdgeInsets.symmetric(vertical: 12),
@@ -161,7 +170,10 @@ class _RegisterScreenState extends State<RegisterScreen> {
           child: Text(
             title,
             textAlign: TextAlign.center,
-            style: GoogleFonts.urbanist(fontWeight: FontWeight.bold, color: isSelected ? Colors.black : Colors.white70),
+            style: GoogleFonts.urbanist(
+              fontWeight: FontWeight.bold,
+              color: isSelected ? Colors.black : Colors.white70,
+            ),
           ),
         ),
       ),
@@ -182,13 +194,22 @@ class _RegisterScreenState extends State<RegisterScreen> {
         prefixIcon: Icon(icon, color: Colors.grey[400]),
         filled: true,
         fillColor: const Color(0xFF1F2327),
-        border: OutlineInputBorder(borderRadius: BorderRadius.circular(12), borderSide: BorderSide.none),
-        focusedBorder: OutlineInputBorder(borderRadius: BorderRadius.circular(12), borderSide: const BorderSide(color: Color(0xFF2ED8C3))),
+        border: OutlineInputBorder(
+          borderRadius: BorderRadius.circular(12),
+          borderSide: BorderSide.none,
+        ),
+        focusedBorder: OutlineInputBorder(
+          borderRadius: BorderRadius.circular(12),
+          borderSide: const BorderSide(color: Color(0xFF2ED8C3)),
+        ),
       ),
       validator: (value) {
-        if (value == null || value.isEmpty) return '$label is required';
-        if (label.contains('Email') && !RegExp(r'^[^@]+@[^@]+\.[^@]+').hasMatch(value)) return 'Please enter a valid email';
-        if (label.contains('Password') && value.length < 6) return 'Password must be at least 6 characters';
+        if (value == null || value.isEmpty) {
+          return '$label is required';
+        }
+        if (label.contains('Email') && !RegExp(r'^[^@]+@[^@]+\.[^@]+').hasMatch(value)) {
+          return 'Please enter a valid email';
+        }
         return null;
       },
     );

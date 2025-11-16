@@ -1,106 +1,123 @@
 import 'dart:async';
 import 'dart:convert';
 
-import 'package:bosta_frontend/models/bus.dart';
-import 'package:bosta_frontend/services/auth_service.dart';
-import 'package:bosta_frontend/models/route_model.dart';
-import 'package:bosta_frontend/services/bus_service.dart';
+import 'package:bosta_frontend/models/app_route.dart';
 import 'package:bosta_frontend/services/api_endpoints.dart';
-import 'package:bosta_frontend/services/route_service.dart';
+import 'package:bosta_frontend/services/auth_service.dart';
 import 'package:flutter/material.dart';
+import 'package:flutter/scheduler.dart';
 import 'package:flutter_map/flutter_map.dart';
 import 'package:geolocator/geolocator.dart';
 import 'package:google_fonts/google_fonts.dart';
 import 'package:http/http.dart' as http;
-import 'package:latlong2/latlong.dart';
 import 'package:provider/provider.dart';
+import 'package:latlong2/latlong.dart';
+
 
 enum DriverStatus { offline, online }
-
+// Enum to manage the screen's state
+enum _DashboardState { loading, success, error }
 class DriverDashboardScreen extends StatefulWidget {
-  final DriverInfo? driverInfo;
-
-  const DriverDashboardScreen({super.key, this.driverInfo});
+  const DriverDashboardScreen({super.key});
 
   @override
   State<DriverDashboardScreen> createState() => _DriverDashboardScreenState();
 }
 
 class _DriverDashboardScreenState extends State<DriverDashboardScreen> {
-  final MapController _mapController = MapController();
-  DriverStatus _status = DriverStatus.offline;
-  bool _isLoading = true;
+  _DashboardState _screenState = _DashboardState.loading;
   String? _errorMessage;
 
-  Bus? _assignedBus;
-  AppRoute? _assignedRoute;
+  final MapController _mapController = MapController();
+  DriverStatus _status = DriverStatus.offline;
+  AppRoute? _assignedRoute; // Will hold the fetched route geometry
 
   // --- Location Tracking ---
   Position? _currentPosition;
-  StreamSubscription<Position>? _positionStream;
+  StreamSubscription<Position>? _positionStreamSubscription;
   Timer? _locationUpdateTimer;
 
   @override
   void initState() {
     super.initState();
-    _loadDriverData();
+    // Use a post-frame callback to ensure the context is available for Provider.
+    SchedulerBinding.instance.addPostFrameCallback((_) {
+      _loadDriverProfile();
+    });
   }
 
   @override
   void dispose() {
-    _positionStream?.cancel();
+    _positionStreamSubscription?.cancel();
     _locationUpdateTimer?.cancel();
     super.dispose();
   }
 
-  Future<void> _loadDriverData() async {
-    if (widget.driverInfo == null) {
+  Future<void> _loadDriverProfile() async {
+    // Set state to loading at the beginning of a fetch attempt.
+    if (mounted) {
       setState(() {
-        _errorMessage = "Driver information not available. Please log in again.";
-        _isLoading = false;
+        _screenState = _DashboardState.loading;
       });
+    }
+
+    final authService = Provider.of<AuthService>(context, listen: false);
+
+    // If driver info is already loaded, just show success.
+    if (authService.currentState.driverInfo != null) {
+      if (mounted) {
+        // First, update the state synchronously.
+        setState(() => _screenState = _DashboardState.success);
+        await _fetchRouteDetails(authService.currentState.driverInfo!.routeId);
+        // Then, perform the async operation.
+      }
       return;
     }
-    try {
-      // Get the authentication token from the AuthService using Provider.
-      final authService = Provider.of<AuthService>(context, listen: false);
-      final String? authToken = authService.currentState.token;
 
-      if (authToken == null) {
-        throw Exception('Authentication token not found. Please log in again.');
-      }
+    // Otherwise, fetch the profile from the backend.
+    final error = await authService.fetchAndSetDriverProfile();
 
-      final uri = Uri.parse(ApiEndpoints.driverProfile);
-      final response = await http.get(uri, headers: {
-        'Content-Type': 'application/json',
-        'Authorization': 'Token $authToken', // Send the token to the backend.
+    if (mounted) {
+      setState(() {
+        if (error == null) {
+          _screenState = _DashboardState.success;
+          _errorMessage = null;
+        } else {
+          _screenState = _DashboardState.error;
+          _errorMessage = error;
+        }
       });
-
-      if (response.statusCode != 200) {
-        throw Exception('Failed to load driver profile: ${response.body}');
-      }
-
-      final data = json.decode(response.body);
-
-      if (mounted) {
-        setState(() {
-          _assignedBus = Bus.fromJson(data['bus']);
-          _assignedRoute = AppRoute.fromJson(data['route']);
-          _isLoading = false;
-        });
-        _centerOnRoute();
-      }
-    } catch (e) {
-      if (mounted) {
-        setState(() {
-          _isLoading = false;
-          _errorMessage = "Failed to load driver data:\n${e.toString()}";
-        });
-        debugPrint("Error loading driver data: $e");
-      }
+      await _fetchRouteDetails(authService.currentState.driverInfo?.routeId);
     }
   }
 
+
+  /// Fetches route geometry from the backend.
+  Future<void> _fetchRouteDetails(String? routeId) async {
+    if (routeId == null) return;
+
+    try {
+      // Assuming an endpoint like /api/routes/{id}/
+      final uri = Uri.parse('${ApiEndpoints.routes}$routeId/');
+      final response = await http.get(uri);
+
+      if (response.statusCode == 200) {
+        final data = json.decode(response.body);
+        if (mounted) {
+          setState(() {
+            _assignedRoute = AppRoute.fromJson(data);
+            _centerOnRoute(); // Center map once route is loaded
+          });
+        }
+      } else {
+        debugPrint('Failed to load route details: ${response.statusCode}');
+      }
+    } catch (e) {
+      debugPrint('Error fetching route details: $e');
+    }
+  }
+
+  // --- Location Tracking (Placeholder/Commented out for now) ---
   Future<bool> _handleLocationPermission() async {
     bool serviceEnabled;
     LocationPermission permission;
@@ -132,13 +149,22 @@ class _DriverDashboardScreenState extends State<DriverDashboardScreen> {
 
   void _startTrip() async {
     final hasPermission = await _handleLocationPermission();
-    if (!hasPermission || _assignedBus == null) return;
+    final driverInfo = Provider.of<AuthService>(context, listen: false).currentState.driverInfo;
+
+    if (!hasPermission || driverInfo == null) {
+      debugPrint("Permission denied or driver info not available.");
+      return;
+    }
 
     setState(() => _status = DriverStatus.online);
 
     // Start listening to position updates for the UI
-    _positionStream =
-        Geolocator.getPositionStream().listen((Position position) {
+    _positionStreamSubscription = Geolocator.getPositionStream(
+      locationSettings: const LocationSettings(
+        accuracy: LocationAccuracy.high,
+        distanceFilter: 10, // Update every 10 meters
+      ),
+    ).listen((Position position) {
       if (mounted) {
         setState(() => _currentPosition = position);
         _mapController.move(LatLng(position.latitude, position.longitude), 16.0);
@@ -147,22 +173,32 @@ class _DriverDashboardScreenState extends State<DriverDashboardScreen> {
 
     // Start a timer to send updates to the backend every 10 seconds
     _locationUpdateTimer?.cancel();
-    _locationUpdateTimer = Timer.periodic(const Duration(seconds: 10), (timer) {
+    _locationUpdateTimer = Timer.periodic(const Duration(seconds: 10), (timer) async {
       if (_currentPosition != null) {
-        BusService.updateLocation(
-          busId: _assignedBus!.id,
-          latitude: _currentPosition!.latitude,
-          longitude: _currentPosition!.longitude,
-        ).catchError((e) {
+        try {
+          final token = Provider.of<AuthService>(context, listen: false).currentState.token;
+          await http.post(
+            Uri.parse(ApiEndpoints.updateBusLocation),
+            headers: {
+              'Content-Type': 'application/json',
+              'Authorization': 'Bearer $token',
+            },
+            body: json.encode({
+              'bus_id': driverInfo.busId,
+              'latitude': _currentPosition!.latitude,
+              'longitude': _currentPosition!.longitude,
+            }),
+          );
+          debugPrint("Location update sent successfully.");
+        } catch (e) {
           debugPrint("Failed to send location update: $e");
-          // Optionally show a transient error indicator
-        });
+        }
       }
     });
   }
 
   void _stopTrip() {
-    _positionStream?.cancel();
+    _positionStreamSubscription?.cancel();
     _locationUpdateTimer?.cancel();
     setState(() {
       _status = DriverStatus.offline;
@@ -180,10 +216,86 @@ class _DriverDashboardScreenState extends State<DriverDashboardScreen> {
       );
     }
   }
+  Widget _buildBody() {
+    switch (_screenState) {
+      case _DashboardState.loading:
+        return const Center(child: CircularProgressIndicator());
+      case _DashboardState.error:
+        return Center(
+          child: Padding(
+            padding: const EdgeInsets.all(16.0),
+            child: Column(
+              mainAxisAlignment: MainAxisAlignment.center,
+              children: [
+                const Icon(Icons.error_outline, color: Colors.red, size: 60),
+                const SizedBox(height: 16),
+                Text(
+                  'Failed to Load Driver Profile',
+                  style: Theme.of(context).textTheme.headlineSmall,
+                  textAlign: TextAlign.center,
+                ),
+                const SizedBox(height: 8),
+                Text(
+                  _errorMessage ?? 'An unknown error occurred.',
+                  textAlign: TextAlign.center,
+                  style: const TextStyle(color: Colors.black54),
+                ),
+                const SizedBox(height: 24),
+                ElevatedButton.icon(
+                  icon: const Icon(Icons.refresh),
+                  label: const Text('Try Again'),
+                  onPressed: _loadDriverProfile,
+                ),
+              ],
+            ),
+          ),
+        );
+      case _DashboardState.success:
+        // Use a Consumer here to get the latest driverInfo after it's loaded.
+        return Consumer<AuthService>(
+          builder: (context, auth, child) {
+            final info = auth.currentState.driverInfo;
+            if (info == null) {
+              // This case should ideally not be hit if logic is correct,
+              // but it's a good fallback.
+              return _buildErrorUI('Driver info became null unexpectedly.');
+            }
+            final bool isOnline = _status == DriverStatus.online;
 
+            return Stack(
+              children: [
+                _buildMap(),
+                _buildStatusCard(info, isOnline),
+              ],
+            );
+          },
+        );
+    }
+  }
+
+  // Helper to build an error UI from anywhere
+  Widget _buildErrorUI(String message) {
+    _errorMessage = message;
+    return Center(
+      child: Padding(
+        padding: const EdgeInsets.all(16.0),
+        child: Column(
+          mainAxisAlignment: MainAxisAlignment.center,
+          children: [
+            const Icon(Icons.error_outline, color: Colors.red, size: 60),
+            const SizedBox(height: 16),
+            Text('An Error Occurred', style: Theme.of(context).textTheme.headlineSmall, textAlign: TextAlign.center),
+            const SizedBox(height: 8),
+            Text(_errorMessage!, textAlign: TextAlign.center, style: const TextStyle(color: Colors.black54)),
+            const SizedBox(height: 24), // Changed to white70 for dark background
+            ElevatedButton.icon(icon: const Icon(Icons.refresh), label: const Text('Try Again'), onPressed: _loadDriverProfile),
+          ],
+        ),
+      ),
+    );
+  }
   @override
   Widget build(BuildContext context) {
-    final isOnline = _status == DriverStatus.online;
 
     return Scaffold(
       backgroundColor: const Color(0xFF0B0E11),
@@ -194,22 +306,13 @@ class _DriverDashboardScreenState extends State<DriverDashboardScreen> {
         actions: [
           IconButton(
             icon: const Icon(Icons.route),
-            onPressed: _isLoading ? null : _centerOnRoute,
+            onPressed: _screenState == _DashboardState.loading ? null : _centerOnRoute,
             tooltip: 'Center on Route',
           ),
         ],
       ),
-      body: _isLoading
-          ? const Center(child: CircularProgressIndicator())
-          : _errorMessage != null
-              ? Center(child: Text(_errorMessage!, style: const TextStyle(color: Colors.white)))
-              : Stack(
-                  children: [
-                    _buildMap(),
-                    _buildStatusCard(),
-                  ],
-                ),
-      bottomNavigationBar: _buildBottomBar(isOnline),
+      body: _buildBody(),
+      bottomNavigationBar: _buildBottomBar(_status == DriverStatus.online),
     );
   }
 
@@ -217,38 +320,32 @@ class _DriverDashboardScreenState extends State<DriverDashboardScreen> {
     return FlutterMap(
       mapController: _mapController,
       options: MapOptions(
-        initialCenter: _assignedRoute?.geometry.first ?? const LatLng(34.1216, 35.6489),
-        initialZoom: 14,
+        initialCenter: _assignedRoute?.geometry.first ?? const LatLng(30.0444, 31.2357), // Default to Cairo
+        initialZoom: 13.0,
       ),
       children: [
         TileLayer(
-          urlTemplate: 'https://{s}.basemaps.cartocdn.com/dark_all/{z}/{x}/{y}{r}.png',
-          subdomains: const ['a', 'b', 'c', 'd'],
+          urlTemplate: 'https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png',
+          subdomains: const ['a', 'b', 'c'],
         ),
         if (_assignedRoute != null)
           PolylineLayer(
             polylines: [
               Polyline(
                 points: _assignedRoute!.geometry,
-                color: Colors.grey.withOpacity(0.6),
-                strokeWidth: 5,
-              )
+                strokeWidth: 5.0,
+                color: Colors.blue.withOpacity(0.8),
+              ),
             ],
           ),
-        if (_currentPosition != null && _status == DriverStatus.online)
+        if (_currentPosition != null)
           MarkerLayer(
             markers: [
               Marker(
+                width: 80.0,
+                height: 80.0,
                 point: LatLng(_currentPosition!.latitude, _currentPosition!.longitude),
-                width: 24,
-                height: 24,
-                child: Container(
-                  decoration: BoxDecoration(
-                    shape: BoxShape.circle,
-                    color: const Color(0xFF2ED8C3),
-                    border: Border.all(color: Colors.white, width: 2.5),
-                  ),
-                ),
+                child: const Icon(Icons.directions_bus, color: Colors.black, size: 30),
               ),
             ],
           ),
@@ -256,7 +353,7 @@ class _DriverDashboardScreenState extends State<DriverDashboardScreen> {
     );
   }
 
-  Widget _buildStatusCard() {
+  Widget _buildStatusCard(DriverInfo info, bool isOnline) {
     return Positioned(
       top: 10,
       left: 16,
@@ -273,9 +370,9 @@ class _DriverDashboardScreenState extends State<DriverDashboardScreen> {
                 height: 12,
                 decoration: BoxDecoration(
                   shape: BoxShape.circle,
-                  color: _status == DriverStatus.online ? const Color(0xFF2ED8C3) : Colors.grey,
+                  color: isOnline ? const Color(0xFF2ED8C3) : Colors.grey,
                   boxShadow: [
-                    if (_status == DriverStatus.online)
+                    if (isOnline)
                       BoxShadow(
                         color: const Color(0xFF2ED8C3).withOpacity(0.7),
                         blurRadius: 8,
@@ -288,12 +385,12 @@ class _DriverDashboardScreenState extends State<DriverDashboardScreen> {
                 crossAxisAlignment: CrossAxisAlignment.start,
                 children: [
                   Text(
-                    'Bus: ${_assignedBus?.plateNumber ?? 'N/A'} | Route: ${widget.driverInfo?.routeId ?? 'N/A'}',
+                    'Bus ID: ${info.busId} | Route ID: ${info.routeId ?? 'N/A'}',
                     style: GoogleFonts.urbanist(fontWeight: FontWeight.bold, color: Colors.white),
                   ),
                   const SizedBox(height: 2),
                   Text(
-                    _status == DriverStatus.online ? 'Online - Streaming Location' : 'Offline',
+                    isOnline ? 'Online - Streaming Location' : 'Offline',
                     style: GoogleFonts.urbanist(color: Colors.white70, fontSize: 12),
                   ),
                 ],
@@ -312,7 +409,7 @@ class _DriverDashboardScreenState extends State<DriverDashboardScreen> {
       child: Padding(
         padding: const EdgeInsets.fromLTRB(16, 8, 16, 16),
         child: ElevatedButton(
-          onPressed: _isLoading ? null : (isOnline ? _stopTrip : _startTrip),
+          onPressed: _screenState == _DashboardState.loading ? null : (isOnline ? _stopTrip : _startTrip),
           style: ElevatedButton.styleFrom(
             backgroundColor: isOnline ? Colors.red.shade700 : const Color(0xFF2ED8C3),
             foregroundColor: isOnline ? Colors.white : Colors.black,

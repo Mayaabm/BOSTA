@@ -1,5 +1,5 @@
-import 'package:bosta_frontend/screens/driver_dashboard_screen.dart';
-import 'package:bosta_frontend/screens/register_screen.dart';
+import 'package:bosta_frontend/services/driver_dashboard.dart';
+import 'package:bosta_frontend/screens/register_screen.dart'; // Make sure this import is correct
 import 'package:bosta_frontend/screens/rider_home_screen.dart';
 import 'package:flutter/material.dart';
 import 'package:google_fonts/google_fonts.dart';
@@ -53,12 +53,7 @@ class _AuthScreenState extends State<AuthScreen> {
 
       if (error == null) {
         // Success! Navigation will be handled by a listener or redirect logic.
-        // For this example, we navigate directly.
-        if (!mounted) return;
-        final destination = _selectedRole == UserRole.driver
-            ? DriverDashboardScreen(driverInfo: authService.currentState.driverInfo)
-            : const RiderHomeScreen();
-        Navigator.of(context).pushReplacement(MaterialPageRoute(builder: (_) => destination));
+        // Navigation is now handled by the AppRouter's redirect logic.
       } else {
         // Failure: show the error message.
         if (!mounted) return;
