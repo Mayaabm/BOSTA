@@ -17,6 +17,10 @@ class _RegisterScreenState extends State<RegisterScreen> {
   final _usernameController = TextEditingController();
   final _emailController = TextEditingController();
   final _passwordController = TextEditingController();
+  // Driver onboarding controllers (account info only)
+  final _firstNameController = TextEditingController();
+  final _lastNameController = TextEditingController();
+  final _phoneController = TextEditingController();
 
   UserRole _selectedRole = UserRole.rider;
   bool _isLoading = false;
@@ -42,6 +46,9 @@ class _RegisterScreenState extends State<RegisterScreen> {
         email: _emailController.text,
         password: _passwordController.text,
         role: _selectedRole,
+        firstName: _firstNameController.text.isNotEmpty ? _firstNameController.text : null,
+        lastName: _lastNameController.text.isNotEmpty ? _lastNameController.text : null,
+        phoneNumber: _phoneController.text.isNotEmpty ? _phoneController.text : null,
       );
 
       // If registration failed, use that error. Otherwise, proceed to login.
@@ -77,6 +84,9 @@ class _RegisterScreenState extends State<RegisterScreen> {
     _usernameController.dispose();
     _emailController.dispose();
     _passwordController.dispose();
+    _firstNameController.dispose();
+    _lastNameController.dispose();
+    _phoneController.dispose();
     super.dispose();
   }
 
@@ -116,6 +126,16 @@ class _RegisterScreenState extends State<RegisterScreen> {
                 _buildTextField(_emailController, 'Email Address', Icons.email_outlined, keyboardType: TextInputType.emailAddress),
                 const SizedBox(height: 20),
                 _buildTextField(_passwordController, 'Password', Icons.lock_outline, obscureText: true, onFieldSubmitted: (_) => _submitForm()),
+                const SizedBox(height: 16),
+                // Driver onboarding fields
+                if (_selectedRole == UserRole.driver) ...[
+                  _buildTextField(_firstNameController, 'First Name', Icons.person),
+                  const SizedBox(height: 8),
+                  _buildTextField(_lastNameController, 'Last Name', Icons.person),
+                  const SizedBox(height: 8),
+                  _buildTextField(_phoneController, 'Phone Number', Icons.phone, keyboardType: TextInputType.phone),
+                  const SizedBox(height: 16),
+                ],
                 const SizedBox(height: 30),
                 if (_errorMessage != null)
                   Padding(

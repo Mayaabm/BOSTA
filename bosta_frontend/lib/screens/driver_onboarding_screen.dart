@@ -56,30 +56,44 @@ class _DriverOnboardingScreenState extends State<DriverOnboardingScreen> {
       // The user must be authenticated to reach this screen, so we need to include the auth token.
       final authService = Provider.of<AuthService>(context, listen: false);
       final token = authService.currentState.token;
-      if (token == null) {
-        throw Exception('Authentication token not found.');
-      }
 
       final uri = Uri.parse(ApiEndpoints.routes);
-      final response = await http.get(uri, headers: {
-        'Authorization': 'Bearer $token',
-      });
+      // Routes are public; attempt to fetch without requiring authentication.
+      final headers = <String, String>{};
+      if (token != null) headers['Authorization'] = 'Bearer $token';
+      final response = await http.get(uri, headers: headers);
 
       if (response.statusCode == 200) {
         final List<dynamic> data = json.decode(response.body);
-        if (mounted) {
-          setState(() {
-            _availableRoutes = data.map((json) => AppRoute.fromJson(json)).toList();
+        try {
+          final parsed = data.map((json) => AppRoute.fromJson(json)).toList();
+          if (mounted) {
+            setState(() {
+              _availableRoutes = parsed;
+              _isFetchingRoutes = false;
+            });
+          }
+        } catch (e, st) {
+          // Parsing error: surface details for debugging
+          final bodyText = response.body.isNotEmpty ? response.body : '<empty body>';
+          debugPrint('fetchAvailableRoutes: JSON parse error: $e');
+          debugPrint('response size=${response.body.length} body (truncated 1024): ${bodyText.length > 1024 ? bodyText.substring(0,1024) : bodyText}');
+          debugPrint(st.toString());
+          if (mounted) setState(() {
+            _errorMessage = 'Failed to parse routes JSON: $e';
             _isFetchingRoutes = false;
           });
         }
       } else {
-        throw Exception('Failed to load routes. Status: ${response.statusCode}');
+        // Surface detailed error info for debugging
+        final bodyText = response.body.isNotEmpty ? response.body : '<empty body>';
+        debugPrint('fetchAvailableRoutes failed: status=${response.statusCode} body=$bodyText');
+        throw Exception('Failed to load routes. Status: ${response.statusCode}. Body: $bodyText');
       }
     } catch (e) {
       if (mounted) {
         setState(() {
-          _errorMessage = 'Could not fetch routes. Please try again.';
+          _errorMessage = 'Could not fetch routes. Please try Refresh or check your network / server.';
           _isFetchingRoutes = false;
         });
       }
@@ -307,11 +321,32 @@ class _DriverOnboardingScreenState extends State<DriverOnboardingScreen> {
     }
 
     if (_availableRoutes.isEmpty) {
-      return Center(
-        child: Text(
-          _errorMessage ?? "No routes available. Please contact support.",
-          style: const TextStyle(color: Colors.red),
-          textAlign: TextAlign.center,
+      return Padding(
+        padding: const EdgeInsets.symmetric(vertical: 12.0),
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.stretch,
+          children: [
+            Text(
+              _errorMessage ?? "No routes available.",
+              style: const TextStyle(color: Colors.amber),
+              textAlign: TextAlign.center,
+            ),
+            const SizedBox(height: 12),
+            Text(
+              'If you see "Please complete all fields..." but do not see route, start location or start time fields, tap Refresh to try loading available routes. If the problem persists, contact support.',
+              style: const TextStyle(color: Colors.white70),
+              textAlign: TextAlign.center,
+            ),
+            const SizedBox(height: 12),
+            ElevatedButton(
+              onPressed: _fetchAvailableRoutes,
+              style: ElevatedButton.styleFrom(
+                backgroundColor: const Color(0xFF2ED8C3),
+                shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
+              ),
+              child: const Text('Refresh Routes', style: TextStyle(color: Colors.black)),
+            ),
+          ],
         ),
       );
     }

@@ -26,6 +26,7 @@ class ApiEndpoints {
   // Note: Trailing slashes are often required by Django REST Framework.
   static final String driverLogin = '$_baseUrl/driver/login/';
   static final String driverProfile = '$_baseUrl/driver/me/';
+  static final String driverOnboard = '$_baseUrl/driver/onboard/';
   static final String riderLogin = '$_baseUrl/rider/login/';
   static final String register = '$_baseUrl/register/';
 }

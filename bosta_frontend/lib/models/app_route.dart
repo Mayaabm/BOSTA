@@ -8,7 +8,17 @@ class AppRoute {
   AppRoute({required this.id, required this.name, required this.geometry});
 
   factory AppRoute.fromJson(Map<String, dynamic> json) {
-    var geometryList = (json['geometry'] as List)
+    // Support both GeoJSON-style object {"type":"LineString","coordinates":[...]}
+    // and a plain coordinates list. The backend serializes geometry as GeoJSON.
+    dynamic geom = json['geometry'];
+    List coords = [];
+    if (geom is Map && geom.containsKey('coordinates')) {
+      coords = geom['coordinates'] as List;
+    } else if (geom is List) {
+      coords = geom;
+    }
+
+    var geometryList = coords
         .map((point) => LatLng(
               (point[1] as num).toDouble(), // latitude
               (point[0] as num).toDouble(), // longitude
@@ -16,6 +26,6 @@ class AppRoute {
         .toList();
 
     return AppRoute(
-        id: json['id'], name: json['name'], geometry: geometryList);
+      id: json['id'].toString(), name: (json['name'] ?? '').toString(), geometry: geometryList);
   }
 }

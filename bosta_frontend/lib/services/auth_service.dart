@@ -55,7 +55,7 @@ class AuthService extends ChangeNotifier {
 
       if (response.statusCode == 200) {
         final data = json.decode(response.body);
-        final String? token = data['token'];
+        final String? token = data['access'];
 
         _state = AuthState(isAuthenticated: true, role: UserRole.rider, token: token);
         notifyListeners();
@@ -121,13 +121,23 @@ class AuthService extends ChangeNotifier {
 
       if (response.statusCode == 200) {
         final data = json.decode(response.body);
+        // Backend returns 'driver_name', 'bus' and 'route' objects.
+        final busId = data['bus'] != null ? (data['bus']['id']?.toString() ?? '') : '';
+        final routeId = data['route'] != null ? (data['route']['id']?.toString() ?? '') : '';
+        final driverName = data['driver_name'] ?? '';
+        final nameParts = driverName.split(' ');
+        final firstName = nameParts.isNotEmpty ? nameParts.first : '';
+        final lastName = nameParts.length > 1 ? nameParts.sublist(1).join(' ') : '';
+        final username = data['bus'] != null ? (data['bus']['plate_number'] ?? '') : '';
+        final email = data['bus'] != null ? (data['bus']['driver_email'] ?? '') : '';
+
         final info = DriverInfo(
-          busId: data['bus_id'],
-          routeId: data['route_id'],
-          firstName: data['first_name'],
-          lastName: data['last_name'],
-          username: data['username'],
-          email: data['email'],
+          busId: busId,
+          routeId: routeId,
+          firstName: firstName,
+          lastName: lastName,
+          username: username,
+          email: email,
           onboardingComplete: data['onboarding_complete'] ?? false,
         );
         // Update the state with the fetched driver info
@@ -152,15 +162,22 @@ class AuthService extends ChangeNotifier {
     required String email,
     required String password,
     required UserRole role,
+    String? firstName,
+    String? lastName,
+    String? phoneNumber,
   }) async {
     final uri = Uri.parse(ApiEndpoints.register);
     try {
-      final body = {
+      final body = <String, dynamic>{
         'username': username,
         'email': email,
         'password': password,
         'role': role == UserRole.driver ? 'driver' : 'rider',
       };
+
+      if (firstName != null && firstName.isNotEmpty) body['first_name'] = firstName;
+      if (lastName != null && lastName.isNotEmpty) body['last_name'] = lastName;
+      if (phoneNumber != null && phoneNumber.isNotEmpty) body['phone_number'] = phoneNumber;
 
       final response = await http.post(
         uri,
@@ -169,8 +186,6 @@ class AuthService extends ChangeNotifier {
       );
 
       if (response.statusCode == 201) { // 201 Created
-        final data = json.decode(response.body);
-        // Assuming the register endpoint returns an access token like login
         return null; // Success
       } else {
         final errorData = json.decode(response.body);
@@ -193,8 +208,7 @@ class AuthService extends ChangeNotifier {
     if (_state.token == null) {
       return "Authentication token not found. Please log in again.";
     }
-
-    final uri = Uri.parse(ApiEndpoints.driverProfile);
+    final uri = Uri.parse(ApiEndpoints.driverOnboard);
     try {
       final response = await http.post(
         uri,
@@ -213,12 +227,10 @@ class AuthService extends ChangeNotifier {
       );
 
       if (response.statusCode == 200) {
-        // On success, the backend has marked onboarding as complete.
-        // We re-fetch the profile to get the updated state.
+        // On success, the backend created/attached bus/trip. Re-fetch profile.
         return await fetchAndSetDriverProfile();
       } else {
         final errorData = json.decode(response.body);
-        // Join multiple errors if they exist
         final errors = (errorData as Map<String, dynamic>).entries.map((e) => '${e.key}: ${e.value.toString()}').join('\n');
         return errors.isNotEmpty ? errors : 'An unknown error occurred during setup.';
       }
