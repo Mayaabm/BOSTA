@@ -44,14 +44,20 @@ class _RegisterScreenState extends State<RegisterScreen> {
         role: _selectedRole,
       );
 
+      // If registration failed, use that error. Otherwise, proceed to login.
       if (registrationError == null) {
         // After successful registration, immediately log in to get the auth token
         // and trigger the profile fetch and redirect logic.
         if (_selectedRole == UserRole.driver) {
           error = await authService.loginAsDriver(_emailController.text, _passwordController.text);
+        } else {
+          // This was missing: log in the rider as well.
+          error = await authService.loginAsRider(_emailController.text, _passwordController.text);
         }
+      } else {
+        // This was missing: propagate the registration error to the UI.
+        error = registrationError;
       }
-
 
       if (error == null) {
         // Success! Navigation is now handled by the AppRouter's redirect logic.

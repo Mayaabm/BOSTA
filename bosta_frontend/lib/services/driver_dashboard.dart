@@ -96,10 +96,14 @@ class _DriverDashboardScreenState extends State<DriverDashboardScreen> {
   Future<void> _fetchRouteDetails(String? routeId) async {
     if (routeId == null) return;
 
+    final authService = Provider.of<AuthService>(context, listen: false);
+    final token = authService.currentState.token;
+
     try {
       // Assuming an endpoint like /api/routes/{id}/
       final uri = Uri.parse('${ApiEndpoints.routes}$routeId/');
-      final response = await http.get(uri);
+      // Add authorization header if the endpoint is protected
+      final response = await http.get(uri, headers: {'Authorization': 'Bearer $token'});
 
       if (response.statusCode == 200) {
         final data = json.decode(response.body);
