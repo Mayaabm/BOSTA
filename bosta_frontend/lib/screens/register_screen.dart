@@ -2,8 +2,6 @@ import 'package:flutter/material.dart';
 import 'package:google_fonts/google_fonts.dart';
 import 'package:provider/provider.dart';
 import '../services/auth_service.dart';
-import 'driver_dashboard_screen.dart';
-import 'rider_home_screen.dart';
 
 class RegisterScreen extends StatefulWidget {
   const RegisterScreen({super.key});
@@ -58,11 +56,9 @@ class _RegisterScreenState extends State<RegisterScreen> {
         if (_selectedRole == UserRole.driver) {
           error = await authService.loginAsDriver(_emailController.text, _passwordController.text);
         } else {
-          // This was missing: log in the rider as well.
           error = await authService.loginAsRider(_emailController.text, _passwordController.text);
         }
       } else {
-        // This was missing: propagate the registration error to the UI.
         error = registrationError;
       }
 

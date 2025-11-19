@@ -56,6 +56,18 @@ class Trip(models.Model):
     departure_time = models.DateTimeField()
     current_stop = models.ForeignKey(Stop, on_delete=models.SET_NULL, null=True, blank=True)
     estimated_arrival_time = models.DateTimeField(null=True, blank=True)
+    # Simulation / lifecycle fields
+    STATUS_PENDING = 'pending'
+    STATUS_STARTED = 'started'
+    STATUS_FINISHED = 'finished'
+    STATUS_CHOICES = [
+        (STATUS_PENDING, 'Pending'),
+        (STATUS_STARTED, 'Started'),
+        (STATUS_FINISHED, 'Finished'),
+    ]
+    status = models.CharField(max_length=16, choices=STATUS_CHOICES, default=STATUS_PENDING)
+    started_at = models.DateTimeField(null=True, blank=True)
+    finished_at = models.DateTimeField(null=True, blank=True)
 
     def __str__(self):
         return f"{self.bus} on {self.route} ({self.departure_time})"

@@ -2,8 +2,9 @@ from django.contrib.gis.geos import Point
 from django.utils import timezone
 from rest_framework.decorators import api_view, permission_classes
 from rest_framework.response import Response
-from .models import VehiclePosition, Trip, Route, Bus, CustomUserProfile
+from .models import VehiclePosition, Trip, Route, Bus, CustomUserProfile, Stop
 from datetime import timedelta
+import datetime
 from django.contrib.auth.models import User
 from django.contrib.gis.measure import D  
 from django.contrib.gis.db.models.functions import Distance
@@ -15,6 +16,11 @@ from rest_framework.permissions import IsAuthenticated
 from rest_framework_simplejwt.tokens import RefreshToken
 import logging
 from django.conf import settings
+import threading
+import time
+import math
+from django.contrib.gis.geos import Point
+from django.utils import timezone as dj_timezone
 
 logger = logging.getLogger(__name__)
 
@@ -150,6 +156,22 @@ def route_list(request):
             }, status=500)
         return Response({"error": "Could not load routes."}, status=500)
 
+
+@api_view(['GET'])
+def route_detail(request, route_id):
+    """
+    Returns the full details for a single route, including geometry and stops.
+    This is used by the frontend when a driver selects a route so the UI
+    can present start locations derived from the geometry or stops.
+    """
+    try:
+        route = Route.objects.prefetch_related('stops').get(pk=route_id)
+    except Route.DoesNotExist:
+        return Response({"error": "Route not found."}, status=404)
+
+    serializer = RouteSerializer(route)
+    return Response(serializer.data)
+
 @api_view(['GET'])
 def get_bus_details(request, bus_id):
     """
@@ -196,7 +218,7 @@ def driver_login(request):
     """
     Authenticates a driver using email and password, then returns their assigned bus and route.
     """
-    email = request.data.get('email')
+    email = (request.data.get('email') or '').strip().lower()
     password = request.data.get('password')
 
     logger.warning("driver_login attempt for email=%s", email)
@@ -255,7 +277,8 @@ def rider_login(request):
     """
     Authenticates a rider (commuter) and returns JWT tokens on success.
     """
-    email = request.data.get('email')
+    # Normalize incoming email to match how we store emails on user creation
+    email = (request.data.get('email') or '').strip().lower()
     password = request.data.get('password')
 
     logger.warning("rider_login attempt for email=%s", email)
@@ -526,3 +549,137 @@ def buses_to_destination(request):
         except VehiclePosition.DoesNotExist:
             continue # Skip if this bus has no position data
     return Response(data)
+
+
+@api_view(['POST'])
+@permission_classes([IsAuthenticated])
+def start_trip(request, trip_id):
+    """
+    Starts a trip simulation in a background thread. Accepts optional JSON body:
+      { "speed_mps": 10.0, "interval_seconds": 2 }
+    The endpoint returns immediately with status 200 and spawns a daemon thread
+    that writes VehiclePosition rows and updates the Bus current_location.
+    """
+    try:
+        trip = Trip.objects.select_related('route', 'bus').get(pk=trip_id)
+    except Trip.DoesNotExist:
+        return Response({"error": "trip_not_found"}, status=404)
+
+    # Verify the requesting user is the assigned driver for this bus
+    user_profile = None
+    try:
+        user_profile = request.user.profile
+    except Exception:
+        return Response({"error": "profile_not_found"}, status=403)
+
+    if not trip.bus or trip.bus.driver_id != user_profile.id:
+        return Response({"error": "forbidden", "message": "You are not the driver of this trip's bus."}, status=403)
+
+    # Read optional params
+    body = request.data or {}
+    speed_mps = float(body.get('speed_mps', 10.0))
+    interval_seconds = float(body.get('interval_seconds', 2.0))
+
+    # Persist optional start stop and start time if provided
+    start_stop_id = body.get('start_stop_id')
+    start_time_str = body.get('start_time')
+    updated_fields = []
+    if start_stop_id:
+        try:
+            stop = Stop.objects.get(pk=start_stop_id)
+            trip.current_stop = stop
+            updated_fields.append('current_stop')
+        except Stop.DoesNotExist:
+            # Ignore invalid stop id - don't block simulation for testing
+            logger.warning('start_trip: invalid start_stop_id=%s for trip=%s', start_stop_id, trip.id)
+
+    if start_time_str:
+        # Accept ISO datetime or HH:MM time-only string. Try parse_datetime first.
+        try:
+            from django.utils.dateparse import parse_datetime, parse_time
+            dt = parse_datetime(start_time_str)
+            if dt is None:
+                t = parse_time(start_time_str)
+                if t is not None:
+                    # Combine with today's date in server timezone
+                    now = dj_timezone.now()
+                    dt = datetime.datetime(now.year, now.month, now.day, t.hour, t.minute)
+                    try:
+                        dt = dj_timezone.make_aware(dt)
+                    except Exception:
+                        pass
+        except Exception:
+            dt = None
+
+        if dt is not None:
+            # Ensure timezone-aware datetime
+            try:
+                if dt.tzinfo is None:
+                    dt = dj_timezone.make_aware(dt)
+            except Exception:
+                pass
+            trip.departure_time = dt
+            updated_fields.append('departure_time')
+
+    if updated_fields:
+        try:
+            trip.save(update_fields=updated_fields)
+        except Exception:
+            logger.exception('start_trip: failed to save trip updated fields %s for trip %s', updated_fields, trip.id)
+
+    # Mark trip started immediately
+    trip.status = Trip.STATUS_STARTED
+    trip.started_at = dj_timezone.now()
+    trip.save(update_fields=['status', 'started_at'])
+
+    # Spawn background thread to perform simulation
+    def _simulate(trip_pk, speed, interval):
+        try:
+            t = Trip.objects.select_related('route', 'bus').get(pk=trip_pk)
+            route = t.route
+            bus = t.bus
+            if not route or not bus:
+                return
+
+            # Extract coordinates from LineString geometry: sequence of (lon, lat)
+            coords = list(route.geometry.coords)
+            # Convert coords to list of (lat, lon) for our app LatLng usage
+            points = [(c[1], c[0]) for c in coords]
+
+            # Simple step-through simulation: visit each point, create VehiclePosition
+            for i in range(len(points)):
+                lat, lon = points[i]
+                # compute heading towards next point if available
+                heading = None
+                if i < len(points) - 1:
+                    nlat, nlon = points[i + 1]
+                    dy = nlat - lat
+                    dx = nlon - lon
+                    heading = math.degrees(math.atan2(dy, dx))
+
+                # Create VehiclePosition
+                vp = VehiclePosition.objects.create(
+                    bus=bus,
+                    location=Point(lon, lat, srid=4326),
+                    heading_deg=heading,
+                    speed_mps=speed,
+                )
+                # Update current location on Bus
+                bus.current_location = vp.location
+                bus.last_reported_at = dj_timezone.now()
+                bus.save(update_fields=['current_location', 'last_reported_at'])
+
+                # Sleep to simulate time passing
+                time.sleep(interval)
+
+            # Mark trip finished
+            t.status = Trip.STATUS_FINISHED
+            t.finished_at = dj_timezone.now()
+            t.save(update_fields=['status', 'finished_at'])
+        except Exception:
+            logger.exception('simulate_trip: unexpected error in background simulator')
+
+    thr = threading.Thread(target=_simulate, args=(trip.id, speed_mps, interval_seconds), daemon=True)
+    thr.start()
+
+    return Response({"status": "simulation_started", "trip_id": str(trip.id)})

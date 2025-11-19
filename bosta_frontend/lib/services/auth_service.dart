@@ -39,6 +39,7 @@ class AuthState {
 /// In a real app, this would interact with your backend API and secure storage.
 class AuthService extends ChangeNotifier {
   AuthState _state = AuthState(); // Default to logged-out
+  String? _lastCreatedTripId;
 
   AuthState get currentState => _state;
 
@@ -89,10 +90,10 @@ class AuthService extends ChangeNotifier {
 
       if (token != null) {
         // Store token and set authenticated state, but driverInfo is null for now.
-        _state = AuthState(isAuthenticated: true, role: UserRole.driver, token: token);
-        notifyListeners();
-        // Now fetch the full profile
-        return await fetchAndSetDriverProfile();
+        // First, fetch the profile with the new token.
+        final profileError = await fetchAndSetDriverProfile(token: token);
+        // Only then, notify listeners. This prevents a double navigation trigger.
+        return profileError;
       }
       return "Login successful, but no token received.";
     } else {
@@ -104,8 +105,9 @@ class AuthService extends ChangeNotifier {
 
   /// Fetches the driver's profile from /api/driver/me/ and updates the state.
   /// Returns null on success, or an error message on failure.
-  Future<String?> fetchAndSetDriverProfile() async {
-    if (_state.token == null) {
+  Future<String?> fetchAndSetDriverProfile({String? token}) async {
+    final authToken = token ?? _state.token;
+    if (authToken == null) {
       return "Authentication token not found. Please log in again.";
     }
 
@@ -115,7 +117,7 @@ class AuthService extends ChangeNotifier {
         uri,
         headers: {
           'Content-Type': 'application/json',
-          'Authorization': 'Bearer ${_state.token}',
+          'Authorization': 'Bearer $authToken',
         },
       );
 
@@ -141,7 +143,7 @@ class AuthService extends ChangeNotifier {
           onboardingComplete: data['onboarding_complete'] ?? false,
         );
         // Update the state with the fetched driver info
-        _state = AuthState(isAuthenticated: true, role: UserRole.driver, driverInfo: info, token: _state.token);
+        _state = AuthState(isAuthenticated: true, role: UserRole.driver, driverInfo: info, token: authToken);
         notifyListeners();
         return null; // Success
       }
@@ -227,8 +229,12 @@ class AuthService extends ChangeNotifier {
       );
 
       if (response.statusCode == 200) {
-        // On success, the backend created/attached bus/trip. Re-fetch profile.
-        return await fetchAndSetDriverProfile();
+        // On success, capture any created trip id returned by backend
+        final data = json.decode(response.body);
+        _lastCreatedTripId = data['trip_id']?.toString();
+        // Re-fetch profile to refresh bus/route info
+        await fetchAndSetDriverProfile();
+        return null;
       } else {
         final errorData = json.decode(response.body);
         final errors = (errorData as Map<String, dynamic>).entries.map((e) => '${e.key}: ${e.value.toString()}').join('\n');
@@ -238,6 +244,9 @@ class AuthService extends ChangeNotifier {
       return 'Could not connect to the server. Please check your network.';
     }
   }
+
+  /// If onboarding created a Trip, this returns its id (useful for testing start)
+  String? get lastCreatedTripId => _lastCreatedTripId;
 
   Future<void> logout() async {
     _state = AuthState();

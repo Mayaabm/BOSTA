@@ -1,6 +1,4 @@
-import 'package:bosta_frontend/services/driver_dashboard.dart';
 import 'package:bosta_frontend/screens/register_screen.dart'; // Make sure this import is correct
-import 'package:bosta_frontend/screens/rider_home_screen.dart';
 import 'package:flutter/material.dart';
 import 'package:google_fonts/google_fonts.dart';
 import 'package:provider/provider.dart';

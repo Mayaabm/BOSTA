@@ -1,3 +1,4 @@
+import 'dart:async';
 import 'dart:convert';
 
 import 'package:bosta_frontend/models/app_route.dart';
@@ -7,6 +8,9 @@ import 'package:flutter/material.dart';
 import 'package:google_fonts/google_fonts.dart';
 import 'package:http/http.dart' as http;
 import 'package:provider/provider.dart';
+import 'package:flutter_map/flutter_map.dart';
+import 'package:latlong2/latlong.dart' as fm;
+import 'package:bosta_frontend/services/driver_dashboard.dart';
 
 class DriverOnboardingScreen extends StatefulWidget {
   const DriverOnboardingScreen({super.key});
@@ -27,7 +31,12 @@ class _DriverOnboardingScreenState extends State<DriverOnboardingScreen> {
   String? _selectedRouteId;
   AppRoute? _selectedRoute; // Will hold the full details of the chosen route
   String? _selectedStartLocation; // Will store the selected stop name
+  String? _selectedStopId; // id of selected stop (robust choice for Dropdown)
+  fm.LatLng? _selectedStartLatLng; // Point picked on the map
+  final MapController _mapController = MapController();
+  bool _forceShowMap = false; // debug toggle to force map rendering
   TimeOfDay? _selectedStartTime;
+  // Polling state removed from onboarding — tracking handled on Driver map screen
 
   bool _isLoading = false;
   bool _isFetchingRoutes = true;
@@ -79,10 +88,12 @@ class _DriverOnboardingScreenState extends State<DriverOnboardingScreen> {
           debugPrint('fetchAvailableRoutes: JSON parse error: $e');
           debugPrint('response size=${response.body.length} body (truncated 1024): ${bodyText.length > 1024 ? bodyText.substring(0,1024) : bodyText}');
           debugPrint(st.toString());
-          if (mounted) setState(() {
+          if (mounted) {
+            setState(() {
             _errorMessage = 'Failed to parse routes JSON: $e';
             _isFetchingRoutes = false;
           });
+          }
         }
       } else {
         // Surface detailed error info for debugging
@@ -106,6 +117,7 @@ class _DriverOnboardingScreenState extends State<DriverOnboardingScreen> {
       _isLoading = true; // Use the main loader while fetching details
       _selectedRoute = null;
       _selectedStartLocation = null;
+      _selectedStopId = null;
       _selectedStartTime = null;
     });
 
@@ -120,6 +132,8 @@ class _DriverOnboardingScreenState extends State<DriverOnboardingScreen> {
           setState(() {
             _selectedRoute = AppRoute.fromJson(json.decode(response.body));
           });
+          // Ensure the map recenters/fits the selected route after the frame renders
+          WidgetsBinding.instance.addPostFrameCallback((_) => _centerMapOnRoute());
         }
       } else {
         throw Exception('Failed to load route details');
@@ -131,6 +145,130 @@ class _DriverOnboardingScreenState extends State<DriverOnboardingScreen> {
     } finally {
       if (mounted) setState(() => _isLoading = false);
     }
+  }
+
+  /// Start trip from UI (test): calls POST /api/trips/<id>/start/ with chosen start stop/time
+  Future<void> _startTripFromUI() async {
+    final authService = Provider.of<AuthService>(context, listen: false);
+    final token = authService.currentState.token;
+    final tripId = authService.lastCreatedTripId;
+
+    if (token == null) {
+      ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('No auth token. Please log in.')));
+      return;
+    }
+    if (tripId == null) {
+      ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('No Trip found. Save and Continue first.')));
+      return;
+    }
+
+    // Build start_time ISO string if a time is selected
+    String? isoStart;
+    if (_selectedStartTime != null) {
+      final now = DateTime.now();
+      final dt = DateTime(now.year, now.month, now.day, _selectedStartTime!.hour, _selectedStartTime!.minute);
+      isoStart = dt.toIso8601String();
+    }
+
+    final body = <String, dynamic>{
+      if (_selectedStopId != null) 'start_stop_id': _selectedStopId,
+      if (isoStart != null) 'start_time': isoStart,
+      'speed_mps': 8.0,
+      'interval_seconds': 2.0,
+    };
+
+    final uri = Uri.parse(ApiEndpoints.startTrip(tripId));
+    try {
+      final res = await http.post(uri, headers: {'Content-Type': 'application/json', 'Authorization': 'Bearer $token'}, body: json.encode(body));
+      if (res.statusCode == 200) {
+        ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('Simulation started — opening driver map.')));
+        // Defer navigation slightly to avoid Navigator being called during
+        // an active build or rebuild. A short delay prevents the
+        // `_debugLocked` assertion in navigator.dart in dev builds.
+        Future.delayed(const Duration(milliseconds: 50), () {
+          if (!mounted) return;
+          try {
+            Navigator.of(context).pushReplacement(MaterialPageRoute(builder: (_) => const DriverDashboardScreen()));
+          } catch (e) {
+            debugPrint('Navigation to DriverDashboardScreen failed: $e');
+            if (mounted) ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('Simulation started. Please open the Driver Dashboard.')));
+          }
+        });
+      } else {
+        final msg = res.body.isNotEmpty ? res.body : 'Failed to start simulation';
+        ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text('Start failed: $msg')));
+      }
+    } catch (e) {
+      ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text('Error starting trip: $e')));
+    }
+  }
+
+  
+
+  void _centerMapOnRoute() {
+    if (_selectedRoute == null || _selectedRoute!.geometry.isEmpty) return;
+    try {
+      final pts = _selectedRoute!.geometry;
+      double minLat = pts.first.latitude, maxLat = pts.first.latitude;
+      double minLng = pts.first.longitude, maxLng = pts.first.longitude;
+      for (final p in pts) {
+        if (p.latitude < minLat) minLat = p.latitude;
+        if (p.latitude > maxLat) maxLat = p.latitude;
+        if (p.longitude < minLng) minLng = p.longitude;
+        if (p.longitude > maxLng) maxLng = p.longitude;
+      }
+      final center = fm.LatLng((minLat + maxLat) / 2.0, (minLng + maxLng) / 2.0);
+      // Move to center with a reasonable zoom; we avoid calling fitBounds for compatibility.
+      _mapController.move(center, 13.0);
+    } catch (e) {
+      try {
+        final p = _selectedRoute!.geometry.first;
+        _mapController.move(p, 13.0);
+      } catch (_) {}
+    }
+  }
+
+  double _distanceToRouteMeters(fm.LatLng point) {
+    // Compute minimum distance from point to any segment of the route polyline
+    if (_selectedRoute == null || _selectedRoute!.geometry.isEmpty) return double.infinity;
+    final fm.Distance dist = fm.Distance();
+    double minMeters = double.infinity;
+
+    final coords = _selectedRoute!.geometry;
+    for (int i = 0; i < coords.length - 1; i++) {
+      final a = coords[i];
+      final b = coords[i + 1];
+      // Convert to fm.LatLng
+      final latlngA = fm.LatLng(a.latitude, a.longitude);
+      final latlngB = fm.LatLng(b.latitude, b.longitude);
+      // Approximate by sampling projection: compute distance to endpoints and to segment midpoint
+      final d1 = dist(point, latlngA);
+      final d2 = dist(point, latlngB);
+      // rough segment distance: min(d1,d2)
+      final segMin = d1 < d2 ? d1 : d2;
+      if (segMin < minMeters) minMeters = segMin;
+    }
+    return minMeters;
+  }
+
+  void _onMapTap(fm.LatLng latlng) {
+    // Validate point is near the route (100m tolerance)
+    final meters = _distanceToRouteMeters(latlng);
+    if (meters > 100) {
+      setState(() {
+        _errorMessage = 'Selected point is ${meters.toStringAsFixed(0)}m away from the route. Please pick a point on the route.';
+      });
+      return;
+    }
+    setState(() {
+      _selectedStartLatLng = latlng;
+      _selectedStartLocation = '${latlng.latitude.toStringAsFixed(5)}, ${latlng.longitude.toStringAsFixed(5)}';
+      _errorMessage = null;
+    });
+    // Move map to selected point
+    try {
+      _mapController.move(latlng, 15.0);
+    } catch (_) {}
   }
 
   Future<void> _submitForm() async {
@@ -255,6 +393,16 @@ class _DriverOnboardingScreenState extends State<DriverOnboardingScreen> {
                           style: GoogleFonts.urbanist(fontSize: 18, fontWeight: FontWeight.bold, color: Colors.black),
                         ),
                       ),
+                const SizedBox(height: 12),
+                ElevatedButton(
+                  onPressed: _startTripFromUI,
+                  style: ElevatedButton.styleFrom(
+                    backgroundColor: const Color(0xFF2ED8C3),
+                    padding: const EdgeInsets.symmetric(vertical: 14),
+                    shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
+                  ),
+                  child: Text('Start Trip (test)', style: GoogleFonts.urbanist(fontSize: 16, fontWeight: FontWeight.bold, color: Colors.black)),
+                ),
                 const SizedBox(height: 20),
               ],
             ),
@@ -275,9 +423,94 @@ class _DriverOnboardingScreenState extends State<DriverOnboardingScreen> {
   }
 
   List<Widget> _buildDynamicRouteFields() {
+    // If we have a selected route with geometry, show a small map picker
+    final hasGeometry = _selectedRoute != null && _selectedRoute!.geometry.isNotEmpty;
+    final hasStops = _selectedRoute != null && _selectedRoute!.stops.isNotEmpty;
+    final showMap = hasGeometry || _forceShowMap;
     return [
       const SizedBox(height: 20),
-      _buildStartLocationDropdown(),
+      if (showMap) ...[
+        Padding(
+          padding: const EdgeInsets.only(bottom: 8.0),
+          child: Text('Pick start location on map (tap to choose)', style: GoogleFonts.urbanist(color: Colors.white70)),
+        ),
+        Container(
+          height: 260,
+          decoration: BoxDecoration(borderRadius: BorderRadius.circular(12), color: const Color(0xFF1F2327)),
+          child: FlutterMap(
+            mapController: _mapController,
+            options: MapOptions(
+              // safe fallback center when forcing the map for debugging
+              initialCenter: (_selectedRoute != null && _selectedRoute!.geometry.isNotEmpty)
+                  ? _selectedRoute!.geometry.first
+                  : fm.LatLng(33.89365, 35.55166),
+              initialZoom: 13.0,
+              onTap: (tapPos, latlng) => _onMapTap(latlng),
+            ),
+            children: [
+              TileLayer(
+                urlTemplate: 'https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png',
+                subdomains: const ['a', 'b', 'c'],
+              ),
+              if (_selectedRoute != null)
+                PolylineLayer(
+                  polylines: [
+                    Polyline(
+                      points: _selectedRoute!.geometry.map((g) => fm.LatLng(g.latitude, g.longitude)).toList(),
+                      color: Colors.orangeAccent,
+                      strokeWidth: 5.0,
+                    ),
+                  ],
+                ),
+              MarkerLayer(markers: [
+                // Show markers for all stops (if available) so driver can tap them on the map.
+                if (_selectedRoute != null && _selectedRoute!.stops.isNotEmpty)
+                  ..._selectedRoute!.stops.map((s) => Marker(
+                        width: 24,
+                        height: 24,
+                        point: fm.LatLng(s.location.latitude, s.location.longitude),
+                          child: IconButton(
+                            padding: const EdgeInsets.all(0),
+                            constraints: const BoxConstraints(minWidth: 28, minHeight: 28),
+                            onPressed: () {
+                              setState(() {
+                                _selectedStopId = s.id;
+                                _selectedStartLocation = s.order != null ? 'Stop ${s.order}' : '${s.location.latitude.toStringAsFixed(5)}, ${s.location.longitude.toStringAsFixed(5)}';
+                                _selectedStartLatLng = fm.LatLng(s.location.latitude, s.location.longitude);
+                                _errorMessage = null;
+                              });
+                              try {
+                                _mapController.move(_selectedStartLatLng!, 15.0);
+                              } catch (_) {}
+                            },
+                            icon: Icon(Icons.location_on, color: Colors.blueAccent.withOpacity(0.95), size: 28),
+                          ),
+                      ))
+                else if (_selectedStartLatLng != null)
+                  Marker(
+                    width: 36,
+                    height: 36,
+                    point: _selectedStartLatLng!,
+                    child: const Icon(Icons.location_on, color: Colors.red, size: 36),
+                  ),
+                ]),
+              // Moving bus marker from simulator (if present)
+              // Moving bus marker removed from onboarding; tracking is on Driver map screen.
+            ],
+          ),
+        ),
+        const SizedBox(height: 12),
+        // If the route has stops, show the dropdown below the map so the
+        // driver can either tap a marker or pick from the list.
+        if (hasStops) ...[
+          _buildStartLocationDropdown(),
+          const SizedBox(height: 12),
+        ],
+      ] else ...[
+        _buildStartLocationDropdown(),
+        const SizedBox(height: 12),
+      ],
+
       const SizedBox(height: 20),
       _buildStartTimePicker(),
     ];
@@ -351,69 +584,98 @@ class _DriverOnboardingScreenState extends State<DriverOnboardingScreen> {
       );
     }
 
-    return DropdownButtonFormField<String>(
-      value: _selectedRouteId,
-      onChanged: (newValue) async {
-        setState(() {
-          _selectedRouteId = newValue;
-        });
-        if (newValue != null) {
-          await _fetchRouteDetails(newValue);
-        }
-      },
-      items: _availableRoutes.map<DropdownMenuItem<String>>((AppRoute route) {
-        return DropdownMenuItem<String>(
-          value: route.id,
-          child: Text(route.name),
-        );
-      }).toList(),
-      hint: const Text('Select Your Operating Route'),
-      style: const TextStyle(color: Colors.white),
-      dropdownColor: const Color(0xFF1F2327),
-      decoration: InputDecoration(
-        filled: true,
-        fillColor: const Color(0xFF1F2327),
-        prefixIcon: const Icon(Icons.route_outlined, color: Colors.white70),
-        border: OutlineInputBorder(
-          borderRadius: BorderRadius.circular(12),
-          borderSide: BorderSide.none,
-        ),
-        focusedBorder: OutlineInputBorder(
-          borderRadius: BorderRadius.circular(12),
-          borderSide: const BorderSide(color: Color(0xFF2ED8C3)),
-        ),
+    // Debug button to force map visibility when troubleshooting (development only)
+    Widget debugButton = Padding(
+      padding: const EdgeInsets.only(top: 8.0),
+      child: ElevatedButton(
+        onPressed: () {
+          setState(() => _forceShowMap = !_forceShowMap);
+        },
+        style: ElevatedButton.styleFrom(backgroundColor: const Color(0xFF2ED8C3)),
+        child: Text(_forceShowMap ? 'Hide Map (debug)' : 'Show Map (debug)', style: const TextStyle(color: Colors.black)),
       ),
-      validator: (value) => value == null ? 'Route selection is required' : null,
     );
+
+    return Column(children: [
+      DropdownButtonFormField<String>(
+        value: _selectedRouteId,
+        onChanged: (newValue) async {
+          setState(() {
+            _selectedRouteId = newValue;
+          });
+          if (newValue != null) {
+            await _fetchRouteDetails(newValue);
+          }
+        },
+        items: _availableRoutes.map<DropdownMenuItem<String>>((AppRoute route) {
+          return DropdownMenuItem<String>(
+            value: route.id,
+            child: Text(route.name),
+          );
+        }).toList(),
+        hint: const Text('Select Your Operating Route'),
+        style: const TextStyle(color: Colors.white),
+        dropdownColor: const Color(0xFF1F2327),
+        decoration: InputDecoration(
+          filled: true,
+          fillColor: const Color(0xFF1F2327),
+          prefixIcon: const Icon(Icons.route_outlined, color: Colors.white70),
+          border: OutlineInputBorder(
+            borderRadius: BorderRadius.circular(12),
+            borderSide: BorderSide.none,
+          ),
+          focusedBorder: OutlineInputBorder(
+            borderRadius: BorderRadius.circular(12),
+            borderSide: const BorderSide(color: Color(0xFF2ED8C3)),
+          ),
+        ),
+        validator: (value) => value == null ? 'Route selection is required' : null,
+      ),
+      debugButton,
+    ]);
   }
 
   Widget _buildStartLocationDropdown() {
-    // The AppRoute model uses 'geometry' for its coordinates, not 'stops'.
-    // We can format the LatLng objects into readable strings for the dropdown.
-    final stops = _selectedRoute?.geometry
-            .map((latlng) =>
-                '${latlng.latitude.toStringAsFixed(4)}, ${latlng.longitude.toStringAsFixed(4)}')
-            .toList() ??
-        [];
+    // Use stops provided by the selected route when available.
+    final routeStops = _selectedRoute?.stops ?? [];
 
-    if (stops.isEmpty) {
+    if (routeStops.isEmpty) {
       return const Text(
-        'This route has no defined starting points. Please select another route.',
+        'This route has no defined stops. Please select another route or use the map picker.',
         style: TextStyle(color: Colors.amber),
       );
     }
 
+    // Use stop id (string) as the dropdown value to avoid object identity issues.
+    final dropdownItems = routeStops.map((s) {
+      final label = s.order != null
+          ? 'Stop ${s.order} — ${s.location.latitude.toStringAsFixed(4)}, ${s.location.longitude.toStringAsFixed(4)}'
+          : '${s.location.latitude.toStringAsFixed(4)}, ${s.location.longitude.toStringAsFixed(4)}';
+      return DropdownMenuItem<String>(
+        value: s.id,
+        child: Text(label),
+      );
+    }).toList();
+
+    // Resolve currently selected stop id into a label as needed for the UI.
     return DropdownButtonFormField<String>(
-      value: _selectedStartLocation,
-      onChanged: (newValue) {
-        setState(() => _selectedStartLocation = newValue);
+      value: _selectedStopId,
+      onChanged: (newStopId) async {
+        if (newStopId == null) return;
+        final chosen = routeStops.firstWhere((s) => s.id == newStopId, orElse: () => routeStops.first);
+        setState(() {
+          _selectedStopId = chosen.id;
+          _selectedStartLocation = chosen.order != null
+              ? 'Stop ${chosen.order}'
+              : '${chosen.location.latitude.toStringAsFixed(5)}, ${chosen.location.longitude.toStringAsFixed(5)}';
+          _selectedStartLatLng = fm.LatLng(chosen.location.latitude, chosen.location.longitude);
+          _errorMessage = null;
+        });
+        try {
+          _mapController.move(_selectedStartLatLng!, 15.0);
+        } catch (_) {}
       },
-      items: stops.map<DropdownMenuItem<String>>((String stop) {
-        return DropdownMenuItem<String>(
-          value: stop,
-          child: Text(stop),
-        );
-      }).toList(),
+      items: dropdownItems,
       hint: const Text('Select Your Starting Location'),
       style: const TextStyle(color: Colors.white),
       dropdownColor: const Color(0xFF1F2327),

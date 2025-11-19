@@ -20,7 +20,11 @@ class ApiEndpoints {
   static String busById(String busId) => '$_baseUrl/buses/$busId';
 
   // --- Route Endpoints ---
-  static final String routes = '$_baseUrl/routes';
+  // Keep trailing slash to match Django REST Framework convention for endpoints.
+  static final String routes = '$_baseUrl/routes/';
+
+  // --- Trip Endpoints ---
+  static String startTrip(String tripId) => '$_baseUrl/trips/$tripId/start/';
 
   // --- Auth & User Endpoints ---
   // Note: Trailing slashes are often required by Django REST Framework.
