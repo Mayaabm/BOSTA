@@ -1,6 +1,8 @@
 import 'package:flutter/material.dart';
+import 'package:flutter/scheduler.dart';
 import 'package:google_fonts/google_fonts.dart';
 import 'package:provider/provider.dart';
+import 'package:bosta_frontend/services/driver_dashboard.dart';
 import '../services/auth_service.dart';
 
 class RegisterScreen extends StatefulWidget {
@@ -63,14 +65,33 @@ class _RegisterScreenState extends State<RegisterScreen> {
       }
 
       if (error == null) {
-        // Success! Navigation is now handled by the AppRouter's redirect logic.
+        // Success! For a driver, navigate directly to the dashboard.
+        // The dashboard itself will handle redirecting to onboarding if needed.
+        if (_selectedRole == UserRole.driver) {
+          // Defer navigation until after the current build cycle is complete
+          // to avoid navigator assertion errors.
+          WidgetsBinding.instance.addPostFrameCallback((_) {
+            if (!mounted) return;
+            Navigator.of(context).pushAndRemoveUntil(
+              MaterialPageRoute(builder: (_) => const DriverDashboardScreen()),
+              (Route<dynamic> route) => false,
+            );
+          });
+        }
       } else {
+        // If there was an error, stop loading and show the message.
         if (!mounted) return;
-        setState(() => _errorMessage = error);
+        setState(() {
+          _errorMessage = error;
+          _isLoading = false;
+        });
       }
-    } finally {
+    } catch (e) {
       if (mounted) {
-        setState(() => _isLoading = false);
+        setState(() {
+          _errorMessage = 'An unexpected error occurred: $e';
+          _isLoading = false;
+        });
       }
     }
   }

@@ -31,8 +31,15 @@ class AuthState {
   final UserRole role;
   final DriverInfo? driverInfo;
   final String? token; // To store the auth token
+  final String? refreshToken;
 
-  AuthState({this.isAuthenticated = false, this.role = UserRole.none, this.driverInfo, this.token});
+  AuthState({
+    this.isAuthenticated = false,
+    this.role = UserRole.none,
+    this.driverInfo,
+    this.token,
+    this.refreshToken,
+  });
 }
 
 /// A mock authentication service to simulate user login and role management.
@@ -87,11 +94,12 @@ class AuthService extends ChangeNotifier {
     if (response.statusCode == 200) {
       final data = json.decode(response.body);
       final String? token = data['access']; // SimpleJWT returns 'access' and 'refresh'
+      final String? refresh = data['refresh'];
 
       if (token != null) {
         // Store token and set authenticated state, but driverInfo is null for now.
         // First, fetch the profile with the new token.
-        final profileError = await fetchAndSetDriverProfile(token: token);
+        final profileError = await fetchAndSetDriverProfile(token: token, refreshToken: refresh);
         // Only then, notify listeners. This prevents a double navigation trigger.
         return profileError;
       }
@@ -105,8 +113,9 @@ class AuthService extends ChangeNotifier {
 
   /// Fetches the driver's profile from /api/driver/me/ and updates the state.
   /// Returns null on success, or an error message on failure.
-  Future<String?> fetchAndSetDriverProfile({String? token}) async {
+  Future<String?> fetchAndSetDriverProfile({String? token, String? refreshToken}) async {
     final authToken = token ?? _state.token;
+    final refresh = refreshToken ?? _state.refreshToken;
     if (authToken == null) {
       return "Authentication token not found. Please log in again.";
     }
@@ -143,7 +152,13 @@ class AuthService extends ChangeNotifier {
           onboardingComplete: data['onboarding_complete'] ?? false,
         );
         // Update the state with the fetched driver info
-        _state = AuthState(isAuthenticated: true, role: UserRole.driver, driverInfo: info, token: authToken);
+        _state = AuthState(
+          isAuthenticated: true,
+          role: UserRole.driver,
+          driverInfo: info,
+          token: authToken,
+          refreshToken: refresh,
+        );
         notifyListeners();
         return null; // Success
       }
@@ -206,17 +221,21 @@ class AuthService extends ChangeNotifier {
     required String busPlateNumber,
     required int busCapacity,
     required String routeId,
+    String? refreshToken,
   }) async {
-    if (_state.token == null) {
+    final accessToken = _state.token;
+    final effectiveRefresh = refreshToken ?? _state.refreshToken; // optional refresh passed in
+    if (accessToken == null) {
       return "Authentication token not found. Please log in again.";
     }
     final uri = Uri.parse(ApiEndpoints.driverOnboard);
-    try {
+
+    Future<String?> doPost(String token) async {
       final response = await http.post(
         uri,
         headers: {
           'Content-Type': 'application/json',
-          'Authorization': 'Bearer ${_state.token}',
+          'Authorization': 'Bearer $token',
         },
         body: json.encode({
           'first_name': firstName,
@@ -227,19 +246,48 @@ class AuthService extends ChangeNotifier {
           'route_id': routeId,
         }),
       );
-
       if (response.statusCode == 200) {
-        // On success, capture any created trip id returned by backend
         final data = json.decode(response.body);
         _lastCreatedTripId = data['trip_id']?.toString();
-        // Re-fetch profile to refresh bus/route info
         await fetchAndSetDriverProfile();
         return null;
-      } else {
-        final errorData = json.decode(response.body);
-        final errors = (errorData as Map<String, dynamic>).entries.map((e) => '${e.key}: ${e.value.toString()}').join('\n');
-        return errors.isNotEmpty ? errors : 'An unknown error occurred during setup.';
       }
+      // Propagate response body for caller to inspect
+      return response.body;
+    }
+
+    try {
+      final result = await doPost(accessToken);
+      // If token invalid and refresh available, try refresh once
+      if (result != null && result.contains('token_not_valid') && effectiveRefresh != null) {
+        final refreshUri = Uri.parse('${ApiEndpoints.driverLogin}refresh/');
+        final refreshRes = await http.post(
+          refreshUri,
+          headers: {'Content-Type': 'application/json'},
+          body: json.encode({'refresh': effectiveRefresh}),
+        );
+        if (refreshRes.statusCode == 200) {
+          final data = json.decode(refreshRes.body);
+          final newAccess = data['access'] as String?;
+          if (newAccess != null) {
+            _state = AuthState(isAuthenticated: true, role: UserRole.driver, driverInfo: _state.driverInfo, token: newAccess);
+            notifyListeners();
+            return await doPost(newAccess);
+          }
+        }
+      }
+      if (result != null) {
+        // Try to format as key/value if JSON; otherwise return raw
+        try {
+          final errorData = json.decode(result);
+          if (errorData is Map<String, dynamic>) {
+            final errors = errorData.entries.map((e) => '${e.key}: ${e.value}').join('\n');
+            return errors.isNotEmpty ? errors : 'An unknown error occurred during setup.';
+          }
+        } catch (_) {}
+        return result;
+      }
+      return null;
     } catch (e) {
       return 'Could not connect to the server. Please check your network.';
     }

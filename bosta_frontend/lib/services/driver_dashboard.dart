@@ -65,12 +65,21 @@ class _DriverDashboardScreenState extends State<DriverDashboardScreen> {
 
     // If driver info is already loaded, just show success.
     if (authService.currentState.driverInfo != null) {
-      if (mounted) {
-        // First, update the state synchronously.
-        setState(() => _screenState = _DashboardState.success);
-        await _fetchRouteDetails(authService.currentState.driverInfo!.routeId);
-        // Then, perform the async operation.
+      final driverInfo = authService.currentState.driverInfo;
+      if (driverInfo != null && !driverInfo.onboardingComplete) {
+        if (mounted) {
+          setState(() {
+            _screenState = _DashboardState.error;
+            _errorMessage = 'Onboarding incomplete. Please finish onboarding before using the dashboard.';
+          });
+        }
+        return;
       }
+
+      if (mounted) {
+        setState(() => _screenState = _DashboardState.success);
+      }
+      await _fetchRouteDetails(authService.currentState.driverInfo!.routeId);
       return;
     }
 
@@ -80,6 +89,13 @@ class _DriverDashboardScreenState extends State<DriverDashboardScreen> {
     if (mounted) {
       setState(() {
         if (error == null) {
+          final driverInfo = authService.currentState.driverInfo;
+          if (driverInfo != null && !driverInfo.onboardingComplete) {
+            _screenState = _DashboardState.error;
+            _errorMessage = 'Onboarding incomplete. Please finish onboarding before using the dashboard.';
+            return; // Stop further execution
+          }
+
           _screenState = _DashboardState.success;
           _errorMessage = null;
         } else {
@@ -90,7 +106,6 @@ class _DriverDashboardScreenState extends State<DriverDashboardScreen> {
       await _fetchRouteDetails(authService.currentState.driverInfo?.routeId);
     }
   }
-
 
   /// Fetches route geometry from the backend.
   Future<void> _fetchRouteDetails(String? routeId) async {

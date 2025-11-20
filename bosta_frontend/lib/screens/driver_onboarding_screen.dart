@@ -11,6 +11,7 @@ import 'package:provider/provider.dart';
 import 'package:flutter_map/flutter_map.dart';
 import 'package:latlong2/latlong.dart' as fm;
 import 'package:bosta_frontend/services/driver_dashboard.dart';
+import 'package:flutter/scheduler.dart';
 
 class DriverOnboardingScreen extends StatefulWidget {
   const DriverOnboardingScreen({super.key});
@@ -41,19 +42,17 @@ class _DriverOnboardingScreenState extends State<DriverOnboardingScreen> {
   bool _isLoading = false;
   bool _isFetchingRoutes = true;
   String? _errorMessage;
-
-  bool _didFetchRoutes = false;
+  bool _isRouteSheetOpen = false;
+  bool _isRouteListExpanded = false;
+  bool _isTimeListExpanded = false;
 
   @override
-  void didChangeDependencies() {
-    super.didChangeDependencies();
-    // Fetch routes only once when the screen is first built and dependencies are available.
-    if (!_didFetchRoutes) {
-      _didFetchRoutes = true;
-      // Use a post-frame callback to ensure the widget is fully mounted
-      // and context is available before accessing Provider.
-      WidgetsBinding.instance.addPostFrameCallback((_) => _fetchAvailableRoutes());
-    }
+  void initState() {
+    super.initState();
+    // Fetch routes once when the screen is first initialized.
+    // Using a post-frame callback ensures the context is available for Provider
+    // and avoids trying to fetch data during the initial build.
+    WidgetsBinding.instance.addPostFrameCallback((_) => _fetchAvailableRoutes());
   }
   
   Future<void> _fetchAvailableRoutes() async {
@@ -73,9 +72,20 @@ class _DriverOnboardingScreenState extends State<DriverOnboardingScreen> {
       final response = await http.get(uri, headers: headers);
 
       if (response.statusCode == 200) {
-        final List<dynamic> data = json.decode(response.body);
+        final dynamic decoded = json.decode(response.body);
+        // Accept both list responses and paginated objects with a "results" list.
+        List<dynamic> dataList;
+        if (decoded is List) {
+          dataList = decoded;
+        } else if (decoded is Map && decoded['results'] is List) {
+          dataList = List<dynamic>.from(decoded['results'] as List);
+        } else {
+          throw FormatException('Unexpected routes payload shape: ${decoded.runtimeType}');
+        }
+
         try {
-          final parsed = data.map((json) => AppRoute.fromJson(json)).toList();
+          final parsed = dataList.map((json) => AppRoute.fromJson(Map<String, dynamic>.from(json as Map))).toList();
+          debugPrint('fetchAvailableRoutes: loaded ${parsed.length} routes');
           if (mounted) {
             setState(() {
               _availableRoutes = parsed;
@@ -90,9 +100,9 @@ class _DriverOnboardingScreenState extends State<DriverOnboardingScreen> {
           debugPrint(st.toString());
           if (mounted) {
             setState(() {
-            _errorMessage = 'Failed to parse routes JSON: $e';
-            _isFetchingRoutes = false;
-          });
+              _errorMessage = 'Failed to parse routes JSON: $e';
+              _isFetchingRoutes = false;
+            });
           }
         }
       } else {
@@ -114,11 +124,7 @@ class _DriverOnboardingScreenState extends State<DriverOnboardingScreen> {
   /// Fetches the full details (including geometry) for a single, selected route.
   Future<void> _fetchRouteDetails(String routeId) async {
     setState(() {
-      _isLoading = true; // Use the main loader while fetching details
-      _selectedRoute = null;
-      _selectedStartLocation = null;
-      _selectedStopId = null;
-      _selectedStartTime = null;
+      _isLoading = true; // Use the main loader while fetching details. Dependent state is cleared in onChanged.
     });
 
     try {
@@ -182,18 +188,6 @@ class _DriverOnboardingScreenState extends State<DriverOnboardingScreen> {
       final res = await http.post(uri, headers: {'Content-Type': 'application/json', 'Authorization': 'Bearer $token'}, body: json.encode(body));
       if (res.statusCode == 200) {
         ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('Simulation started — opening driver map.')));
-        // Defer navigation slightly to avoid Navigator being called during
-        // an active build or rebuild. A short delay prevents the
-        // `_debugLocked` assertion in navigator.dart in dev builds.
-        Future.delayed(const Duration(milliseconds: 50), () {
-          if (!mounted) return;
-          try {
-            Navigator.of(context).pushReplacement(MaterialPageRoute(builder: (_) => const DriverDashboardScreen()));
-          } catch (e) {
-            debugPrint('Navigation to DriverDashboardScreen failed: $e');
-            if (mounted) ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('Simulation started. Please open the Driver Dashboard.')));
-          }
-        });
       } else {
         final msg = res.body.isNotEmpty ? res.body : 'Failed to start simulation';
         ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text('Start failed: $msg')));
@@ -304,6 +298,7 @@ class _DriverOnboardingScreenState extends State<DriverOnboardingScreen> {
       busPlateNumber: _busPlateController.text.toUpperCase(),
       busCapacity: int.parse(busCapacityText),
       routeId: routeId,
+      refreshToken: authService.currentState.refreshToken, // use refresh token if available
     );
 
     if (mounted) {
@@ -312,9 +307,16 @@ class _DriverOnboardingScreenState extends State<DriverOnboardingScreen> {
           _errorMessage = error;
           _isLoading = false;
         });
+      } else {
+        // Success: stop loading; navigation is handled by router/redirects.
+        setState(() {
+          _isLoading = false;
+          _errorMessage = null;
+        });
+        if (mounted) {
+          ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('Profile saved.')));
+        }
       }
-      // On success, the AppRouter's redirect logic will handle navigation
-      // because the auth state (onboardingComplete) will change.
     }
   }
 
@@ -596,41 +598,89 @@ class _DriverOnboardingScreenState extends State<DriverOnboardingScreen> {
       ),
     );
 
+    final currentRouteIds = _availableRoutes.map((r) => r.id).toSet();
+    final hasValidRouteSelection = _selectedRouteId != null && currentRouteIds.contains(_selectedRouteId);
+    final safeSelectedRouteId = hasValidRouteSelection ? _selectedRouteId : null;
+    // Clear an invalid selection on the next frame to avoid Dropdown assertion.
+    if (!hasValidRouteSelection && _selectedRouteId != null) {
+      WidgetsBinding.instance.addPostFrameCallback((_) {
+        if (!mounted) return;
+        setState(() {
+          _selectedRouteId = null;
+          _selectedRoute = null;
+          _selectedStopId = null;
+          _selectedStartLocation = null;
+        });
+      });
+    }
+
     return Column(children: [
-      DropdownButtonFormField<String>(
-        value: _selectedRouteId,
-        onChanged: (newValue) async {
-          setState(() {
-            _selectedRouteId = newValue;
-          });
-          if (newValue != null) {
-            await _fetchRouteDetails(newValue);
-          }
+      GestureDetector(
+        onTap: () {
+          setState(() => _isRouteListExpanded = !_isRouteListExpanded);
         },
-        items: _availableRoutes.map<DropdownMenuItem<String>>((AppRoute route) {
-          return DropdownMenuItem<String>(
-            value: route.id,
-            child: Text(route.name),
-          );
-        }).toList(),
-        hint: const Text('Select Your Operating Route'),
-        style: const TextStyle(color: Colors.white),
-        dropdownColor: const Color(0xFF1F2327),
-        decoration: InputDecoration(
-          filled: true,
-          fillColor: const Color(0xFF1F2327),
-          prefixIcon: const Icon(Icons.route_outlined, color: Colors.white70),
-          border: OutlineInputBorder(
-            borderRadius: BorderRadius.circular(12),
-            borderSide: BorderSide.none,
-          ),
-          focusedBorder: OutlineInputBorder(
-            borderRadius: BorderRadius.circular(12),
-            borderSide: const BorderSide(color: Color(0xFF2ED8C3)),
+        child: AbsorbPointer(
+          child: TextFormField(
+            key: ValueKey('route-picker-${_availableRoutes.length}-${safeSelectedRouteId ?? 'none'}'),
+            readOnly: true,
+            controller: TextEditingController(text: _selectedRoute?.name ?? ''),
+            style: const TextStyle(color: Colors.white),
+            decoration: InputDecoration(
+              labelText: 'Select Your Operating Route',
+              labelStyle: TextStyle(color: Colors.grey[400]),
+              prefixIcon: const Icon(Icons.route_outlined, color: Colors.white70),
+              suffixIcon: Icon(
+                _isRouteListExpanded ? Icons.keyboard_arrow_up : Icons.keyboard_arrow_down,
+                color: Colors.white70,
+              ),
+              filled: true,
+              fillColor: const Color(0xFF1F2327),
+              border: OutlineInputBorder(
+                borderRadius: BorderRadius.circular(12),
+                borderSide: BorderSide.none,
+              ),
+              focusedBorder: OutlineInputBorder(
+                borderRadius: BorderRadius.circular(12),
+                borderSide: const BorderSide(color: Color(0xFF2ED8C3)),
+              ),
+            ),
+            validator: (_) => safeSelectedRouteId == null ? 'Route selection is required' : null,
           ),
         ),
-        validator: (value) => value == null ? 'Route selection is required' : null,
       ),
+      if (_isRouteListExpanded)
+        Container(
+          margin: const EdgeInsets.only(top: 8),
+          decoration: BoxDecoration(
+            color: const Color(0xFF1F2327),
+            borderRadius: BorderRadius.circular(12),
+            border: Border.all(color: const Color(0xFF2ED8C3).withOpacity(0.4)),
+          ),
+          constraints: const BoxConstraints(maxHeight: 220),
+          child: ListView.separated(
+            shrinkWrap: true,
+            itemCount: _availableRoutes.length,
+            separatorBuilder: (_, __) => const Divider(color: Colors.white12, height: 1),
+            itemBuilder: (_, index) {
+              final route = _availableRoutes[index];
+              final isSelected = route.id == _selectedRouteId;
+              return ListTile(
+                title: Text(route.name, style: const TextStyle(color: Colors.white)),
+                trailing: isSelected ? const Icon(Icons.check, color: Color(0xFF2ED8C3)) : null,
+                onTap: () async {
+                  setState(() {
+                    _selectedRouteId = route.id;
+                    _selectedRoute = null;
+                    _selectedStopId = null;
+                    _selectedStartLocation = null;
+                    _isRouteListExpanded = false;
+                  });
+                  await _fetchRouteDetails(route.id);
+                },
+              );
+            },
+          ),
+        ),
       debugButton,
     ]);
   }
@@ -657,9 +707,24 @@ class _DriverOnboardingScreenState extends State<DriverOnboardingScreen> {
       );
     }).toList();
 
+    final hasValidStopSelection = _selectedStopId != null && routeStops.any((s) => s.id == _selectedStopId);
+    final safeSelectedStopId = hasValidStopSelection ? _selectedStopId : null;
+    // If the selected stop is no longer available (e.g., after a route refresh), clear it.
+    if (!hasValidStopSelection && _selectedStopId != null) {
+      WidgetsBinding.instance.addPostFrameCallback((_) {
+        if (!mounted) return;
+        setState(() {
+          _selectedStopId = null;
+          _selectedStartLocation = null;
+          _selectedStartLatLng = null;
+        });
+      });
+    }
+
     // Resolve currently selected stop id into a label as needed for the UI.
     return DropdownButtonFormField<String>(
-      value: _selectedStopId,
+      key: ValueKey('start-stop-dropdown-${_selectedRoute?.id ?? 'none'}-${routeStops.length}-${safeSelectedStopId ?? 'none'}'),
+      value: safeSelectedStopId,
       onChanged: (newStopId) async {
         if (newStopId == null) return;
         final chosen = routeStops.firstWhere((s) => s.id == newStopId, orElse: () => routeStops.first);
@@ -697,41 +762,74 @@ class _DriverOnboardingScreenState extends State<DriverOnboardingScreen> {
   }
 
   Widget _buildStartTimePicker() {
-    return GestureDetector(
-      onTap: () async {
-        final TimeOfDay? pickedTime = await showTimePicker(
-          context: context,
-          initialTime: _selectedStartTime ?? TimeOfDay.now(),
-        );
-        if (pickedTime != null && pickedTime != _selectedStartTime) {
-          setState(() {
-            _selectedStartTime = pickedTime;
-          });
-        }
-      },
-      child: AbsorbPointer(
-        child: TextFormField(
-          // Use a controller to display the formatted time
-          controller: TextEditingController(text: _selectedStartTime?.format(context) ?? ''),
-          style: const TextStyle(color: Colors.white),
-          decoration: InputDecoration(
-            labelText: 'Select Start Time',
-            labelStyle: TextStyle(color: Colors.grey[400]),
-            prefixIcon: const Icon(Icons.access_time_outlined, color: Colors.white70),
-            filled: true,
-            fillColor: const Color(0xFF1F2327),
-            border: OutlineInputBorder(
-              borderRadius: BorderRadius.circular(12),
-              borderSide: BorderSide.none,
-            ),
-            focusedBorder: OutlineInputBorder(
-              borderRadius: BorderRadius.circular(12),
-              borderSide: const BorderSide(color: Color(0xFF2ED8C3)),
+    final times = List<TimeOfDay>.generate(96, (i) {
+      final hour = i ~/ 4;
+      final minute = (i % 4) * 15;
+      return TimeOfDay(hour: hour, minute: minute);
+    });
+
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.stretch,
+      children: [
+        GestureDetector(
+          onTap: () async {
+            setState(() => _isTimeListExpanded = !_isTimeListExpanded);
+          },
+          child: AbsorbPointer(
+            child: TextFormField(
+              // Use a controller to display the formatted time
+              controller: TextEditingController(text: _selectedStartTime?.format(context) ?? ''),
+              style: const TextStyle(color: Colors.white),
+              decoration: InputDecoration(
+                labelText: 'Select Start Time',
+                labelStyle: TextStyle(color: Colors.grey[400]),
+                prefixIcon: const Icon(Icons.access_time_outlined, color: Colors.white70),
+                filled: true,
+                fillColor: const Color(0xFF1F2327),
+                border: OutlineInputBorder(
+                  borderRadius: BorderRadius.circular(12),
+                  borderSide: BorderSide.none,
+                ),
+                focusedBorder: OutlineInputBorder(
+                  borderRadius: BorderRadius.circular(12),
+                  borderSide: const BorderSide(color: Color(0xFF2ED8C3)),
+                ),
+              ),
+              validator: (value) => _selectedStartTime == null ? 'Start time is required' : null,
             ),
           ),
-          validator: (value) => _selectedStartTime == null ? 'Start time is required' : null,
         ),
-      ),
+        if (_isTimeListExpanded)
+          Container(
+            margin: const EdgeInsets.only(top: 8),
+            decoration: BoxDecoration(
+              color: const Color(0xFF1F2327),
+              borderRadius: BorderRadius.circular(12),
+              border: Border.all(color: const Color(0xFF2ED8C3).withOpacity(0.4)),
+            ),
+            constraints: const BoxConstraints(maxHeight: 220),
+            child: ListView.builder(
+              shrinkWrap: true,
+              itemCount: times.length,
+              itemBuilder: (_, idx) {
+                final t = times[idx];
+                final isSelected = _selectedStartTime != null &&
+                    _selectedStartTime!.hour == t.hour &&
+                    _selectedStartTime!.minute == t.minute;
+                return ListTile(
+                  title: Text(t.format(context), style: const TextStyle(color: Colors.white)),
+                  trailing: isSelected ? const Icon(Icons.check, color: Color(0xFF2ED8C3)) : null,
+                  onTap: () {
+                    setState(() {
+                      _selectedStartTime = t;
+                      _isTimeListExpanded = false;
+                    });
+                  },
+                );
+              },
+            ),
+          ),
+      ],
     );
   }
 

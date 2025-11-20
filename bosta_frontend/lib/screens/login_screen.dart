@@ -58,7 +58,10 @@ class _LoginScreenState extends State<LoginScreen> {
         final destination = _selectedRole == UserRole.driver
             ? DriverDashboardScreen(driverInfo: authService.currentState.driverInfo)
             : const RiderHomeScreen();
-        Navigator.of(context).pushReplacement(MaterialPageRoute(builder: (_) => destination));
+        WidgetsBinding.instance.addPostFrameCallback((_) {
+          if (!mounted) return;
+          Navigator.of(context).pushReplacement(MaterialPageRoute(builder: (_) => destination));
+        });
       } else {
         // Failure: show the error message.
         if (!mounted) return;
