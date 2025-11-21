@@ -1,6 +1,5 @@
 import 'package:bosta_frontend/screens/register_screen.dart'; // Make sure this import is correct
 import 'package:flutter/material.dart';
-import 'package:flutter/scheduler.dart';
 import 'package:google_fonts/google_fonts.dart';
 import 'package:provider/provider.dart';
 import '../services/auth_service.dart';
@@ -52,7 +51,8 @@ class _AuthScreenState extends State<AuthScreen> {
 
       if (error == null) {
         // Success! Navigation will be handled by a listener or redirect logic.
-        // Navigation is now handled by the AppRouter's redirect logic.
+        // The AuthService has updated the state and called notifyListeners().
+        // The router will now take over. No more code is needed here.
       } else {
         // Failure: show the error message.
         if (!mounted) return;
@@ -60,7 +60,7 @@ class _AuthScreenState extends State<AuthScreen> {
       }
     } finally {
       if (mounted) {
-        setState(() => _isLoading = false);
+        if (_errorMessage != null) setState(() => _isLoading = false);
       }
     }
   }
@@ -132,12 +132,8 @@ class _AuthScreenState extends State<AuthScreen> {
                 const SizedBox(height: 20),
                 TextButton(
                   onPressed: () {
-                    WidgetsBinding.instance.addPostFrameCallback((_) {
-                      if (!mounted) return;
-                      Navigator.of(context).push(
-                        MaterialPageRoute(builder: (context) => const RegisterScreen()),
-                      );
-                    });
+                    // Direct navigation is safe here as it's in an `onPressed` handler.
+                    Navigator.of(context).push(MaterialPageRoute(builder: (context) => const RegisterScreen()));
                   },
                   child: Text(
                     "Don't have an account? Sign Up",

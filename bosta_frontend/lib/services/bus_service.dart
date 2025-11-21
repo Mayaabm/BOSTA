@@ -40,11 +40,15 @@ class BusService {
     required String busId,
     required double latitude,
     required double longitude,
+    required String token, // Add token parameter
   }) async {
     final uri = Uri.parse(ApiEndpoints.updateBusLocation);
     final response = await http.post(
       uri,
-      headers: {'Content-Type': 'application/json'},
+      headers: {
+        'Content-Type': 'application/json',
+        'Authorization': 'Bearer $token', // Include the token
+      },
       body: json.encode({
         'bus_id': busId,
         'latitude': latitude,

@@ -167,8 +167,9 @@ class _DriverDashboardScreenState extends State<DriverDashboardScreen> {
   }
 
   void _startTrip() async {
+    final authService = Provider.of<AuthService>(context, listen: false);
     final hasPermission = await _handleLocationPermission();
-    final driverInfo = Provider.of<AuthService>(context, listen: false).currentState.driverInfo;
+    final driverInfo = authService.currentState.driverInfo;
 
     if (!hasPermission || driverInfo == null) {
       debugPrint("Permission denied or driver info not available.");
@@ -193,9 +194,10 @@ class _DriverDashboardScreenState extends State<DriverDashboardScreen> {
     // Start a timer to send updates to the backend every 10 seconds
     _locationUpdateTimer?.cancel();
     _locationUpdateTimer = Timer.periodic(const Duration(seconds: 10), (timer) async {
-      if (_currentPosition != null) {
+      // Use the captured authService instance to get the latest token.
+      final token = authService.currentState.token;
+      if (_currentPosition != null && token != null) {
         try {
-          final token = Provider.of<AuthService>(context, listen: false).currentState.token;
           await http.post(
             Uri.parse(ApiEndpoints.updateBusLocation),
             headers: {

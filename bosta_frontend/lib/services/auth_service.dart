@@ -32,6 +32,8 @@ class AuthState {
   final DriverInfo? driverInfo;
   final String? token; // To store the auth token
   final String? refreshToken;
+  final String? selectedStopId;
+  final String? selectedStartTime; // Storing as ISO string for simplicity
 
   AuthState({
     this.isAuthenticated = false,
@@ -39,6 +41,8 @@ class AuthState {
     this.driverInfo,
     this.token,
     this.refreshToken,
+    this.selectedStopId,
+    this.selectedStartTime,
   });
 }
 
@@ -158,6 +162,8 @@ class AuthService extends ChangeNotifier {
           driverInfo: info,
           token: authToken,
           refreshToken: refresh,
+          selectedStopId: _state.selectedStopId, // Preserve existing trip info
+          selectedStartTime: _state.selectedStartTime, // Preserve existing trip info
         );
         notifyListeners();
         return null; // Success
@@ -221,6 +227,8 @@ class AuthService extends ChangeNotifier {
     required String busPlateNumber,
     required int busCapacity,
     required String routeId,
+    String? startStopId,
+    String? startTime,
     String? refreshToken,
   }) async {
     final accessToken = _state.token;
@@ -249,7 +257,14 @@ class AuthService extends ChangeNotifier {
       if (response.statusCode == 200) {
         final data = json.decode(response.body);
         _lastCreatedTripId = data['trip_id']?.toString();
+        _state = AuthState(
+            isAuthenticated: true,
+            role: UserRole.driver,
+            driverInfo: _state.driverInfo,
+            selectedStopId: startStopId,
+            selectedStartTime: startTime);
         await fetchAndSetDriverProfile();
+        notifyListeners(); // Notify listeners AFTER profile is fetched and state is fully updated.
         return null;
       }
       // Propagate response body for caller to inspect
@@ -270,7 +285,14 @@ class AuthService extends ChangeNotifier {
           final data = json.decode(refreshRes.body);
           final newAccess = data['access'] as String?;
           if (newAccess != null) {
-            _state = AuthState(isAuthenticated: true, role: UserRole.driver, driverInfo: _state.driverInfo, token: newAccess);
+            _state = AuthState(
+                isAuthenticated: true,
+                role: UserRole.driver,
+                driverInfo: _state.driverInfo,
+                token: newAccess,
+                refreshToken: effectiveRefresh,
+                selectedStopId: startStopId,
+                selectedStartTime: startTime);
             notifyListeners();
             return await doPost(newAccess);
           }
@@ -290,6 +312,26 @@ class AuthService extends ChangeNotifier {
       return null;
     } catch (e) {
       return 'Could not connect to the server. Please check your network.';
+    }
+  }
+
+  /// Marks the driver's onboarding as complete and notifies listeners.
+  /// This is useful for triggering navigation after a final step that doesn't
+  /// involve a full profile refetch.
+  void completeOnboarding() {
+    if (_state.driverInfo != null) {
+      final newInfo = DriverInfo(
+        busId: _state.driverInfo!.busId,
+        routeId: _state.driverInfo!.routeId,
+        firstName: _state.driverInfo!.firstName,
+        lastName: _state.driverInfo!.lastName,
+        username: _state.driverInfo!.username,
+        email: _state.driverInfo!.email,
+        onboardingComplete: true, // Explicitly mark as complete
+      );
+      _state = AuthState(
+          isAuthenticated: _state.isAuthenticated, role: _state.role, driverInfo: newInfo, token: _state.token, refreshToken: _state.refreshToken);
+      notifyListeners();
     }
   }
 

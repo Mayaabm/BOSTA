@@ -5,6 +5,7 @@ import 'package:bosta_frontend/models/app_route.dart';
 import 'package:bosta_frontend/services/api_endpoints.dart';
 import 'package:bosta_frontend/services/auth_service.dart';
 import 'package:flutter/material.dart';
+import 'package:go_router/go_router.dart';
 import 'package:google_fonts/google_fonts.dart';
 import 'package:http/http.dart' as http;
 import 'package:provider/provider.dart';
@@ -42,8 +43,9 @@ class _DriverOnboardingScreenState extends State<DriverOnboardingScreen> {
   bool _isLoading = false;
   bool _isFetchingRoutes = true;
   String? _errorMessage;
-  bool _isRouteSheetOpen = false;
+  final bool _isRouteSheetOpen = false;
   bool _isRouteListExpanded = false;
+  bool _isProfileSaved = false; // To control button visibility
   bool _isTimeListExpanded = false;
 
   @override
@@ -153,52 +155,6 @@ class _DriverOnboardingScreenState extends State<DriverOnboardingScreen> {
     }
   }
 
-  /// Start trip from UI (test): calls POST /api/trips/<id>/start/ with chosen start stop/time
-  Future<void> _startTripFromUI() async {
-    final authService = Provider.of<AuthService>(context, listen: false);
-    final token = authService.currentState.token;
-    final tripId = authService.lastCreatedTripId;
-
-    if (token == null) {
-      ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('No auth token. Please log in.')));
-      return;
-    }
-    if (tripId == null) {
-      ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('No Trip found. Save and Continue first.')));
-      return;
-    }
-
-    // Build start_time ISO string if a time is selected
-    String? isoStart;
-    if (_selectedStartTime != null) {
-      final now = DateTime.now();
-      final dt = DateTime(now.year, now.month, now.day, _selectedStartTime!.hour, _selectedStartTime!.minute);
-      isoStart = dt.toIso8601String();
-    }
-
-    final body = <String, dynamic>{
-      if (_selectedStopId != null) 'start_stop_id': _selectedStopId,
-      if (isoStart != null) 'start_time': isoStart,
-      'speed_mps': 8.0,
-      'interval_seconds': 2.0,
-    };
-
-    final uri = Uri.parse(ApiEndpoints.startTrip(tripId));
-    try {
-      final res = await http.post(uri, headers: {'Content-Type': 'application/json', 'Authorization': 'Bearer $token'}, body: json.encode(body));
-      if (res.statusCode == 200) {
-        ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('Simulation started — opening driver map.')));
-      } else {
-        final msg = res.body.isNotEmpty ? res.body : 'Failed to start simulation';
-        ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text('Start failed: $msg')));
-      }
-    } catch (e) {
-      ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text('Error starting trip: $e')));
-    }
-  }
-
-  
-
   void _centerMapOnRoute() {
     if (_selectedRoute == null || _selectedRoute!.geometry.isEmpty) return;
     try {
@@ -285,12 +241,20 @@ class _DriverOnboardingScreenState extends State<DriverOnboardingScreen> {
     final routeId = _selectedRouteId!;
     final busCapacityText = _busCapacityController.text;
 
+    String? isoStart;
+    if (_selectedStartTime != null) {
+      final now = DateTime.now();
+      final dt = DateTime(now.year, now.month, now.day, _selectedStartTime!.hour, _selectedStartTime!.minute);
+      isoStart = dt.toIso8601String();
+    }
+
     setState(() {
       _isLoading = true;
       _errorMessage = null;
     });
 
     final authService = Provider.of<AuthService>(context, listen: false);
+    // Pass the selected stop ID and time to be stored in the auth state.
     final error = await authService.setupDriverProfile(
       firstName: _firstNameController.text,
       lastName: _lastNameController.text,
@@ -298,6 +262,8 @@ class _DriverOnboardingScreenState extends State<DriverOnboardingScreen> {
       busPlateNumber: _busPlateController.text.toUpperCase(),
       busCapacity: int.parse(busCapacityText),
       routeId: routeId,
+      startStopId: _selectedStopId,
+      startTime: isoStart,
       refreshToken: authService.currentState.refreshToken, // use refresh token if available
     );
 
@@ -308,10 +274,11 @@ class _DriverOnboardingScreenState extends State<DriverOnboardingScreen> {
           _isLoading = false;
         });
       } else {
-        // Success: stop loading; navigation is handled by router/redirects.
+        // Success: stop loading and show the 'Start' button.
         setState(() {
           _isLoading = false;
           _errorMessage = null;
+          _isProfileSaved = true;
         });
         if (mounted) {
           ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('Profile saved.')));
@@ -371,40 +338,41 @@ class _DriverOnboardingScreenState extends State<DriverOnboardingScreen> {
                 _buildRouteDropdown(),
                 // Conditionally display start location and time pickers once a route is selected.
                 if (_selectedRouteId != null) ..._buildDynamicRouteFields(),
-                const SizedBox(height: 20),
-                _buildFileUpload('Driver License (Optional)', Icons.credit_card),
-                const SizedBox(height: 12),
-                _buildFileUpload('Bus Registration (Optional)', Icons.article_outlined),
-                const SizedBox(height: 30),
+                const SizedBox(height: 40),
                 if (_errorMessage != null)
                   Padding(
                     padding: const EdgeInsets.only(bottom: 16.0),
                     child: Text(_errorMessage!, style: const TextStyle(color: Colors.red, fontSize: 14), textAlign: TextAlign.center),
                   ),
-                _isLoading || _isFetchingRoutes
-                    ? const Center(child: CircularProgressIndicator(color: Color(0xFF2ED8C3)))
-                    : ElevatedButton(
-                        onPressed: _submitForm,
-                        style: ElevatedButton.styleFrom(
-                          backgroundColor: const Color(0xFF2ED8C3),
-                          padding: const EdgeInsets.symmetric(vertical: 16),
-                          shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
-                        ),
-                        child: Text(
-                          'Save and Continue',
-                          style: GoogleFonts.urbanist(fontSize: 18, fontWeight: FontWeight.bold, color: Colors.black),
-                        ),
-                      ),
-                const SizedBox(height: 12),
-                ElevatedButton(
-                  onPressed: _startTripFromUI,
-                  style: ElevatedButton.styleFrom(
-                    backgroundColor: const Color(0xFF2ED8C3),
-                    padding: const EdgeInsets.symmetric(vertical: 14),
-                    shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
+                if (_isLoading || _isFetchingRoutes)
+                  const Center(child: CircularProgressIndicator(color: Color(0xFF2ED8C3)))
+                else if (_isProfileSaved)
+                  ElevatedButton(
+                    onPressed: () {
+                      debugPrint("--- 'Start' button pressed on Onboarding screen ---");
+                      // Notify the app state that onboarding is fully complete.
+                      // This allows the GoRouter redirect to permit navigation to the dashboard.
+                      Provider.of<AuthService>(context, listen: false).completeOnboarding();
+                      debugPrint("Navigating to /driver/dashboard...");
+                      GoRouter.of(context).go('/driver/dashboard');
+                    },
+                    style: ElevatedButton.styleFrom(
+                      backgroundColor: const Color(0xFF2ED8C3),
+                      padding: const EdgeInsets.symmetric(vertical: 16),
+                      shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
+                    ),
+                    child: Text('Start', style: GoogleFonts.urbanist(fontSize: 18, fontWeight: FontWeight.bold, color: Colors.black)),
+                  )
+                else
+                  ElevatedButton(
+                    onPressed: _submitForm,
+                    style: ElevatedButton.styleFrom(
+                      backgroundColor: const Color(0xFF2ED8C3),
+                      padding: const EdgeInsets.symmetric(vertical: 16),
+                      shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
+                    ),
+                    child: Text('Save and Continue', style: GoogleFonts.urbanist(fontSize: 18, fontWeight: FontWeight.bold, color: Colors.black)),
                   ),
-                  child: Text('Start Trip (test)', style: GoogleFonts.urbanist(fontSize: 16, fontWeight: FontWeight.bold, color: Colors.black)),
-                ),
                 const SizedBox(height: 20),
               ],
             ),
@@ -830,34 +798,6 @@ class _DriverOnboardingScreenState extends State<DriverOnboardingScreen> {
             ),
           ),
       ],
-    );
-  }
-
-  Widget _buildFileUpload(String label, IconData icon) {
-    return GestureDetector(
-      onTap: () {
-        // TODO: Implement file picking logic
-        ScaffoldMessenger.of(context).showSnackBar(
-          const SnackBar(content: Text('File upload functionality not yet implemented.')),
-        );
-      },
-      child: Container(
-        padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 16),
-        decoration: BoxDecoration(
-          color: const Color(0xFF1F2327),
-          borderRadius: BorderRadius.circular(12),
-        ),
-        child: Row(
-          children: [
-            Icon(icon, color: Colors.white70),
-            const SizedBox(width: 16),
-            Expanded(
-              child: Text(label, style: const TextStyle(color: Colors.white70)),
-            ),
-            const Icon(Icons.upload_file_outlined, color: Color(0xFF2ED8C3)),
-          ],
-        ),
-      ),
     );
   }
 }

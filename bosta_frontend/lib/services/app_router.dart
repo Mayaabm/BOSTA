@@ -1,7 +1,8 @@
 import 'package:flutter/material.dart';
 import 'package:go_router/go_router.dart';
 import '../screens/auth_screen.dart';
-import 'driver_dashboard.dart';
+import '../screens/register_screen.dart'; // Keep this for the route definition
+import 'driver_dashboard.dart' as driver_map; // Import the REAL dashboard with a unique name
 import '../screens/driver_onboarding_screen.dart';
 import '../screens/rider_home_screen.dart';
 import 'auth_service.dart';
@@ -19,13 +20,18 @@ class AppRouter {
           builder: (context, state) => const AuthScreen(),
         ),
         GoRoute(
+          path: '/register',
+          builder: (context, state) => const RegisterScreen(),
+        ),
+        GoRoute(
           path: '/rider/home',
           builder: (context, state) => const RiderHomeScreen(),
         ),
         GoRoute(
           path: '/driver/dashboard',
           builder: (context, state) {
-            return const DriverDashboardScreen();
+            // Use the uniquely named import to ensure we get the correct screen
+            return const driver_map.DriverDashboardScreen();
           },
         ),
         GoRoute(
@@ -35,35 +41,31 @@ class AppRouter {
       ],
       redirect: (BuildContext context, GoRouterState state) {
         final authState = authService.currentState;
-        final bool onAuthRoute = state.matchedLocation == '/auth';
-        final bool onOnboardingRoute = state.matchedLocation == '/driver/onboarding';
+        final currentLocation = state.matchedLocation;
+        final isLoggingIn = currentLocation == '/auth' || currentLocation == '/register';
 
-        // If user is not authenticated, redirect to auth screen, unless they are already there.
+        // 1. If user is not authenticated:
         if (!authState.isAuthenticated) {
-          return onAuthRoute ? null : '/auth';
+          // Allow them to be on login/register pages, otherwise redirect to login.
+          return isLoggingIn ? null : '/auth';
         }
 
-        // If user is authenticated...
+        // 2. If user IS authenticated:
         if (authState.role == UserRole.driver) {
           final driverInfo = authState.driverInfo;
-          // If driver info is missing or onboarding is not complete, redirect to onboarding.
+          // Rule 2a: If onboarding is not complete, they MUST be on the onboarding screen.
           if (driverInfo == null || !driverInfo.onboardingComplete) {
-            return onOnboardingRoute ? null : '/driver/onboarding';
+            return currentLocation == '/driver/onboarding' ? null : '/driver/onboarding';
           }
-          // If onboarding is complete and they are on the auth/onboarding page, go to dashboard.
-          if (onAuthRoute || onOnboardingRoute) {
+          // Rule 2b: If onboarding IS complete and they are on an auth or onboarding page, send them to the dashboard.
+          if (isLoggingIn || currentLocation == '/driver/onboarding') {
             return '/driver/dashboard';
           }
-        } else if (authState.role == UserRole.rider && onAuthRoute) {
-          return '/rider/home';
+        } else if (authState.role == UserRole.rider) {
+          // Rule 2c: If they are a rider and on an auth page, send them to their home.
+          if (isLoggingIn) return '/rider/home';
         }
-
-        // If the user is authenticated but on a route that doesn't match their role, redirect them.
-        if (authState.isAuthenticated) {
-          if (authState.role == UserRole.driver && state.matchedLocation != '/driver/dashboard') return '/driver/dashboard';
-          if (authState.role == UserRole.rider && state.matchedLocation != '/rider/home') return '/rider/home';
-        }
-
+        // 3. If none of the above rules apply, no redirect is needed.
         return null;
       },
     );

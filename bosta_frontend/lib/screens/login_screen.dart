@@ -1,6 +1,3 @@
-import 'package:bosta_frontend/screens/driver_dashboard_screen.dart';
-import 'package:bosta_frontend/screens/register_screen.dart';
-import 'package:bosta_frontend/screens/rider_home_screen.dart';
 import 'package:flutter/material.dart';
 import 'package:google_fonts/google_fonts.dart';
 import 'package:provider/provider.dart';
@@ -52,16 +49,9 @@ class _LoginScreenState extends State<LoginScreen> {
       }
 
       if (error == null) {
-        // Success! Navigation will be handled by a listener or redirect logic.
-        // For this example, we navigate directly.
-        if (!mounted) return;
-        final destination = _selectedRole == UserRole.driver
-            ? DriverDashboardScreen(driverInfo: authService.currentState.driverInfo)
-            : const RiderHomeScreen();
-        WidgetsBinding.instance.addPostFrameCallback((_) {
-          if (!mounted) return;
-          Navigator.of(context).pushReplacement(MaterialPageRoute(builder: (_) => destination));
-        });
+        // Success! Navigation is now handled by the GoRouter's redirect logic
+        // after AuthService notifies its listeners. No navigation code is needed here.
+        // This ensures consistent routing for all authentication states.
       } else {
         // Failure: show the error message.
         if (!mounted) return;
@@ -141,9 +131,8 @@ class _LoginScreenState extends State<LoginScreen> {
                 const SizedBox(height: 20),
                 TextButton(
                   onPressed: () {
-                    Navigator.of(context).push(
-                      MaterialPageRoute(builder: (context) => const RegisterScreen()),
-                    );
+                    // This screen is not part of the GoRouter flow, so direct navigation is okay here.
+                    Navigator.of(context).pushNamed('/register');
                   },
                   child: Text(
                     "Don't have an account? Sign Up",
