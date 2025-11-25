@@ -17,5 +17,6 @@ urlpatterns = [
     path('driver/onboard/', views.driver_onboard, name='driver_onboard'),
     path('driver/me/', views.get_driver_profile, name='get_driver_profile'),
     path('trips/<int:trip_id>/start/', views.start_trip, name='start_trip'),
+    path('trips/<str:trip_id>/end/', views.EndTripView.as_view(), name='trip-end'),
     path('register/', views.register_user, name='register_user'),
 ]

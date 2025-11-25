@@ -25,6 +25,7 @@ class ApiEndpoints {
 
   // --- Trip Endpoints ---
   static String startTrip(String tripId) => '$_baseUrl/trips/$tripId/start/';
+  static String endTrip(String tripId) => '$_baseUrl/trips/$tripId/end/';
 
   // --- Auth & User Endpoints ---
   // Note: Trailing slashes are often required by Django REST Framework.

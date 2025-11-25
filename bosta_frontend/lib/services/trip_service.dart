@@ -6,7 +6,7 @@ class TripService {
   /// Checks if the currently authenticated driver has an active trip.
   /// Returns the trip ID if active, otherwise null.
   static Future<String?> checkForActiveTrip(String token) async {
-    final uri = Uri.parse(ApiEndpoints.activeTrip);
+    final uri = Uri.parse(ApiEndpoints.driverProfile); // Changed to use the existing driver profile endpoint
     try {
       final response = await http.get(
         uri,

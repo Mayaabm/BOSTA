@@ -56,14 +56,10 @@ class AppRouter {
 
         // 2. If user IS authenticated:
         if (authState.role == UserRole.driver) {
-          final driverInfo = authState.driverInfo;
-          // Rule 2a: If onboarding is not complete, they MUST be on the onboarding screen.
-          if (driverInfo == null || !driverInfo.onboardingComplete) {
-            return currentLocation == '/driver/onboarding' ? null : '/driver/onboarding';
-          }
-          // Rule 2b: If onboarding IS complete and they are on an auth or onboarding page, send them to their new home screen.
-          if (isLoggingIn || currentLocation == '/driver/onboarding') {
-            return '/driver/home';
+          // If the driver is authenticated and is on a login/register page,
+          // always redirect them to their home screen, regardless of onboarding status.
+          if (isLoggingIn) {
+            return '/driver/home'; // Always go to home after login.
           }
         } else if (authState.role == UserRole.rider) {
           // Rule 2c: If they are a rider and on an auth page, send them to their home.

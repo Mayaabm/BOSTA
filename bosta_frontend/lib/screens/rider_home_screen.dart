@@ -308,7 +308,7 @@ class _RiderHomeScreenState extends State<RiderHomeScreen> with TickerProviderSt
               options: MapOptions(
                 initialCenter: initialCenter,
                 initialZoom: 14,
-                onTap: (_, _) => _deselectBus(),
+                onTap: (_, __) => _deselectBus(),
               ),
               children: [
                 TileLayer(

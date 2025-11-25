@@ -390,10 +390,9 @@ class _DriverOnboardingScreenState extends State<DriverOnboardingScreen> {
                   ElevatedButton(
                     onPressed: () {
                       debugPrint("--- 'Done' button pressed on Onboarding screen ---");
-                      // Mark onboarding as complete and navigate back to the driver home screen.
-                      Provider.of<AuthService>(context, listen: false).completeOnboarding();
-                      debugPrint("Navigating to /driver/home...");
-                      GoRouter.of(context).go('/driver/home');
+                      // After setup is complete, navigate directly to the dashboard
+                      // to start the trip with the new settings.
+                      GoRouter.of(context).go('/driver/dashboard');
                     },
                     style: ElevatedButton.styleFrom(
                       backgroundColor: const Color(0xFF2ED8C3),

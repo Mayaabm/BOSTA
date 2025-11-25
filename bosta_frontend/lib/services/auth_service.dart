@@ -198,7 +198,6 @@ class AuthService extends ChangeNotifier {
           final lat = selectedStartLat ?? startStop.location.latitude;
           final lon = selectedStartLon ?? startStop.location.longitude;
           initialPosition = fm.LatLng(lat, lon);
-          initialPosition = fm.LatLng(startStop.location.latitude, startStop.location.longitude);
           debugPrint("[AuthService] fetchAndSetDriverProfile: Initial position set from start stop '${startStop.id}': $initialPosition");
         } else if (fetchedRoute != null && fetchedRoute.geometry.isNotEmpty) {
           initialPosition = fetchedRoute.geometry.first;
@@ -456,6 +455,7 @@ class AuthService extends ChangeNotifier {
         selectedStartTime: _state.selectedStartTime,
         selectedStartLat: _state.selectedStartLat,
         selectedStartLon: _state.selectedStartLon,
+        initialBusPosition: _state.initialBusPosition, // Preserve the initial position
       );
       notifyListeners();
     }
