@@ -1,7 +1,9 @@
 import 'dart:async';
 import 'dart:convert';
 import 'package:flutter/foundation.dart';
+import 'package:bosta_frontend/models/app_route.dart';
 import 'package:http/http.dart' as http;
+import 'package:latlong2/latlong.dart' as fm;
 import 'api_endpoints.dart';
 
 enum UserRole { rider, driver, none }
@@ -30,19 +32,27 @@ class AuthState {
   final bool isAuthenticated;
   final UserRole role;
   final DriverInfo? driverInfo;
+  final AppRoute? assignedRoute; // Add this to hold the full route object
   final String? token; // To store the auth token
   final String? refreshToken;
   final String? selectedStopId;
   final String? selectedStartTime; // Storing as ISO string for simplicity
+  final double? selectedStartLat;
+  final double? selectedStartLon;
+  final fm.LatLng? initialBusPosition; // The starting coordinates of the bus
 
   AuthState({
     this.isAuthenticated = false,
     this.role = UserRole.none,
     this.driverInfo,
+    this.assignedRoute,
     this.token,
     this.refreshToken,
     this.selectedStopId,
     this.selectedStartTime,
+    this.selectedStartLat,
+    this.selectedStartLon,
+    this.initialBusPosition,
   });
 }
 
@@ -117,16 +127,21 @@ class AuthService extends ChangeNotifier {
 
   /// Fetches the driver's profile from /api/driver/me/ and updates the state.
   /// Returns null on success, or an error message on failure.
-  Future<String?> fetchAndSetDriverProfile({String? token, String? refreshToken}) async {
+  Future<String?> fetchAndSetDriverProfile({String? token, String? refreshToken, String? selectedStopId, String? selectedStartTime, double? selectedStartLat, double? selectedStartLon}) async {
+    final stopwatch = Stopwatch()..start();
+    debugPrint("[AuthService] fetchAndSetDriverProfile: Starting...");
+
     final authToken = token ?? _state.token;
     final refresh = refreshToken ?? _state.refreshToken;
     if (authToken == null) {
       return "Authentication token not found. Please log in again.";
+    } else {
+      debugPrint("[AuthService] fetchAndSetDriverProfile: Using token starting with '${authToken.substring(0, 8)}...'");
     }
-
+    debugPrint("[AuthService] fetchAndSetDriverProfile: Fetching from URL: ${ApiEndpoints.driverProfile}");
     final uri = Uri.parse(ApiEndpoints.driverProfile);
     try {
-      final response = await http.get(
+      final response = await http.get( // Added timeout
         uri,
         headers: {
           'Content-Type': 'application/json',
@@ -134,9 +149,12 @@ class AuthService extends ChangeNotifier {
         },
       );
 
+      debugPrint("[AuthService] fetchAndSetDriverProfile: Profile fetch took ${stopwatch.elapsedMilliseconds}ms. Status: ${response.statusCode}");
       if (response.statusCode == 200) {
+        debugPrint("[AuthService] fetchAndSetDriverProfile: Received 200 OK. Response body: ${response.body}");
         final data = json.decode(response.body);
         // Backend returns 'driver_name', 'bus' and 'route' objects.
+        debugPrint("[AuthService] fetchAndSetDriverProfile: Parsing profile data...");
         final busId = data['bus'] != null ? (data['bus']['id']?.toString() ?? '') : '';
         final routeId = data['route'] != null ? (data['route']['id']?.toString() ?? '') : '';
         final driverName = data['driver_name'] ?? '';
@@ -145,6 +163,7 @@ class AuthService extends ChangeNotifier {
         final lastName = nameParts.length > 1 ? nameParts.sublist(1).join(' ') : '';
         final username = data['bus'] != null ? (data['bus']['plate_number'] ?? '') : '';
         final email = data['bus'] != null ? (data['bus']['driver_email'] ?? '') : '';
+        debugPrint("[AuthService] fetchAndSetDriverProfile: Parsed driver info - busId: $busId, routeId: $routeId, name: $driverName");
 
         final info = DriverInfo(
           busId: busId,
@@ -156,24 +175,69 @@ class AuthService extends ChangeNotifier {
           onboardingComplete: data['onboarding_complete'] ?? false,
         );
         // Update the state with the fetched driver info
+
+        // Now, fetch the full route details if a routeId exists
+        AppRoute? fetchedRoute;
+        // The /api/driver/me/ endpoint now returns the full route object.
+        // We can parse it directly instead of making a second API call.
+        if (data['route'] != null) {
+          fetchedRoute = AppRoute.fromJson(data['route']);
+          debugPrint("[AuthService] fetchAndSetDriverProfile: Successfully parsed embedded route '${fetchedRoute.name}'.");
+        } else if (routeId.isNotEmpty) {
+          debugPrint("[AuthService] fetchAndSetDriverProfile: Route ID $routeId found, but route object is missing from response.");
+        }
+        
+        // Find the initial bus position from the fetched route and selected stop ID
+        fm.LatLng? initialPosition;
+        final startStopId = selectedStopId ?? _state.selectedStopId;
+        debugPrint("[AuthService] fetchAndSetDriverProfile: Determining initial position. startStopId: $startStopId");
+        if (fetchedRoute != null && startStopId != null) {
+          final startStop = fetchedRoute.stops.firstWhere((stop) => stop.id == startStopId, orElse: () => fetchedRoute!.stops.first);
+          // If a specific start lat/lon was provided from onboarding, use that. Otherwise, use the stop's location.
+          // This handles both picking a stop and tapping the map.
+          final lat = selectedStartLat ?? startStop.location.latitude;
+          final lon = selectedStartLon ?? startStop.location.longitude;
+          initialPosition = fm.LatLng(lat, lon);
+          initialPosition = fm.LatLng(startStop.location.latitude, startStop.location.longitude);
+          debugPrint("[AuthService] fetchAndSetDriverProfile: Initial position set from start stop '${startStop.id}': $initialPosition");
+        } else if (fetchedRoute != null && fetchedRoute.geometry.isNotEmpty) {
+          initialPosition = fetchedRoute.geometry.first;
+          debugPrint("[AuthService] fetchAndSetDriverProfile: Initial position set from first point of route geometry: $initialPosition");
+        } else {
+          debugPrint("[AuthService] fetchAndSetDriverProfile: Could not determine initial position.");
+        }
+
+        debugPrint("[AuthService] Storing final state with:");
+        debugPrint("  > selectedStopId: ${selectedStopId ?? _state.selectedStopId}");
+        debugPrint("  > selectedStartTime: ${selectedStartTime ?? _state.selectedStartTime}");
+        debugPrint("  > selectedStartLat: ${selectedStartLat ?? _state.selectedStartLat}");
+        debugPrint("  > selectedStartLon: ${selectedStartLon ?? _state.selectedStartLon}");
+
         _state = AuthState(
           isAuthenticated: true,
           role: UserRole.driver,
           driverInfo: info,
+          assignedRoute: fetchedRoute, // Store the fetched route
           token: authToken,
           refreshToken: refresh,
-          selectedStopId: _state.selectedStopId, // Preserve existing trip info
-          selectedStartTime: _state.selectedStartTime, // Preserve existing trip info
+          selectedStopId: selectedStopId ?? _state.selectedStopId, // Use newly provided trip info, or preserve existing
+          selectedStartTime: selectedStartTime ?? _state.selectedStartTime, // Use newly provided trip info, or preserve existing
+          selectedStartLat: selectedStartLat ?? _state.selectedStartLat,
+          selectedStartLon: selectedStartLon ?? _state.selectedStartLon,
+          initialBusPosition: initialPosition,
         );
         notifyListeners();
+        debugPrint("[AuthService] fetchAndSetDriverProfile: Success. Total time: ${stopwatch.elapsedMilliseconds}ms.");
         return null; // Success
       }
       // Provide a more detailed error message for debugging
+      debugPrint("[AuthService] fetchAndSetDriverProfile: Error. Status: ${response.statusCode}. Total time: ${stopwatch.elapsedMilliseconds}ms.");
       final errorBody = response.body.isNotEmpty ? json.decode(response.body) : {};
       final errorMessage = errorBody['error'] ?? 'No specific error message provided.';
       return "Failed to load driver profile. Status: ${response.statusCode}. Reason: $errorMessage";
     } catch (e) {
       // Catch network or parsing errors
+      debugPrint("[AuthService] fetchAndSetDriverProfile: Exception caught. Total time: ${stopwatch.elapsedMilliseconds}ms. Error: $e");
       return "An error occurred while fetching the driver profile: $e";
     }
   }
@@ -229,9 +293,17 @@ class AuthService extends ChangeNotifier {
     required String routeId,
     String? startStopId,
     String? startTime,
+    double? startLat,
+    double? startLon,
     String? refreshToken,
   }) async {
     final accessToken = _state.token;
+
+    debugPrint("[AuthService] setupDriverProfile called with:");
+    debugPrint("  > routeId: $routeId");
+    debugPrint("  > startStopId: $startStopId");
+    debugPrint("  > startLat: $startLat, startLon: $startLon");
+
     final effectiveRefresh = refreshToken ?? _state.refreshToken; // optional refresh passed in
     if (accessToken == null) {
       return "Authentication token not found. Please log in again.";
@@ -256,16 +328,13 @@ class AuthService extends ChangeNotifier {
       );
       if (response.statusCode == 200) {
         final data = json.decode(response.body);
-        _lastCreatedTripId = data['trip_id']?.toString();
-        _state = AuthState(
-            isAuthenticated: true,
-            role: UserRole.driver,
-            driverInfo: _state.driverInfo,
-            selectedStopId: startStopId,
-            selectedStartTime: startTime);
-        await fetchAndSetDriverProfile();
-        notifyListeners(); // Notify listeners AFTER profile is fetched and state is fully updated.
-        return null;
+        _lastCreatedTripId = data['trip_id']?.toString(); // Capture the trip ID
+
+        // IMPORTANT: Now that the backend profile is set up, immediately fetch it
+        // to get the complete, authoritative state, including the new routeId.
+        // This fetch will also update the selected stop and time.
+        final fetchError = await fetchAndSetDriverProfile(token: token, selectedStopId: startStopId, selectedStartTime: startTime, selectedStartLat: startLat, selectedStartLon: startLon);
+        return fetchError; // Return null on success, or the error message from fetching.
       }
       // Propagate response body for caller to inspect
       return response.body;
@@ -289,10 +358,13 @@ class AuthService extends ChangeNotifier {
                 isAuthenticated: true,
                 role: UserRole.driver,
                 driverInfo: _state.driverInfo,
+                assignedRoute: _state.assignedRoute,
                 token: newAccess,
                 refreshToken: effectiveRefresh,
                 selectedStopId: startStopId,
-                selectedStartTime: startTime);
+                selectedStartTime: startTime,
+                selectedStartLat: startLat,
+                selectedStartLon: startLon);
             notifyListeners();
             return await doPost(newAccess);
           }
@@ -309,10 +381,51 @@ class AuthService extends ChangeNotifier {
         } catch (_) {}
         return result;
       }
-      return null;
+      return result; // This will be null if doPost was successful
     } catch (e) {
       return 'Could not connect to the server. Please check your network.';
     }
+  }
+
+  /// Attempts to get a new access token using a refresh token.
+  /// Returns the new access token on success, or null on failure.
+  Future<String?> refreshAccessToken(String refreshToken) async {
+    final refreshUri = Uri.parse('${ApiEndpoints.driverLogin}refresh/');
+    debugPrint("[AuthService] Refreshing token at $refreshUri");
+    try {
+      final refreshRes = await http.post(
+        refreshUri,
+        headers: {'Content-Type': 'application/json'},
+        body: json.encode({'refresh': refreshToken}),
+      );
+
+      if (refreshRes.statusCode == 200) {
+        final data = json.decode(refreshRes.body);
+        final newAccessToken = data['access'] as String?;
+        if (newAccessToken != null) {
+          // Update the auth state with the new token
+          _state = AuthState(
+            isAuthenticated: _state.isAuthenticated,
+            role: _state.role,
+            driverInfo: _state.driverInfo,
+            assignedRoute: _state.assignedRoute,
+            token: newAccessToken,
+            refreshToken: _state.refreshToken, // The refresh token itself doesn't change
+            selectedStopId: _state.selectedStopId,
+            selectedStartTime: _state.selectedStartTime,
+            selectedStartLat: _state.selectedStartLat,
+            selectedStartLon: _state.selectedStartLon,
+            initialBusPosition: _state.initialBusPosition,
+          );
+          notifyListeners();
+          debugPrint("[AuthService] Token refresh successful.");
+          return newAccessToken;
+        }
+      }
+    } catch (e) {
+      debugPrint("[AuthService] Exception during token refresh: $e");
+    }
+    return null;
   }
 
   /// Marks the driver's onboarding as complete and notifies listeners.
@@ -320,6 +433,9 @@ class AuthService extends ChangeNotifier {
   /// involve a full profile refetch.
   void completeOnboarding() {
     if (_state.driverInfo != null) {
+      // Create a new DriverInfo object based on the existing one,
+      // but ensure onboardingComplete is set to true. This preserves
+      // all other fetched details like routeId.
       final newInfo = DriverInfo(
         busId: _state.driverInfo!.busId,
         routeId: _state.driverInfo!.routeId,
@@ -327,10 +443,20 @@ class AuthService extends ChangeNotifier {
         lastName: _state.driverInfo!.lastName,
         username: _state.driverInfo!.username,
         email: _state.driverInfo!.email,
-        onboardingComplete: true, // Explicitly mark as complete
+        onboardingComplete: true,
       );
       _state = AuthState(
-          isAuthenticated: _state.isAuthenticated, role: _state.role, driverInfo: newInfo, token: _state.token, refreshToken: _state.refreshToken);
+        isAuthenticated: _state.isAuthenticated,
+        role: _state.role,
+        driverInfo: newInfo, // Use the updated info object
+        assignedRoute: _state.assignedRoute,
+        token: _state.token,
+        refreshToken: _state.refreshToken,
+        selectedStopId: _state.selectedStopId,
+        selectedStartTime: _state.selectedStartTime,
+        selectedStartLat: _state.selectedStartLat,
+        selectedStartLon: _state.selectedStartLon,
+      );
       notifyListeners();
     }
   }

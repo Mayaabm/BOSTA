@@ -1,6 +1,5 @@
 import 'dart:async';
 import 'dart:convert';
-
 import 'package:bosta_frontend/models/app_route.dart';
 import 'package:bosta_frontend/services/api_endpoints.dart';
 import 'package:bosta_frontend/services/auth_service.dart';
@@ -11,8 +10,6 @@ import 'package:http/http.dart' as http;
 import 'package:provider/provider.dart';
 import 'package:flutter_map/flutter_map.dart';
 import 'package:latlong2/latlong.dart' as fm;
-import 'package:bosta_frontend/services/driver_dashboard.dart';
-import 'package:flutter/scheduler.dart';
 
 class DriverOnboardingScreen extends StatefulWidget {
   const DriverOnboardingScreen({super.key});
@@ -36,17 +33,14 @@ class _DriverOnboardingScreenState extends State<DriverOnboardingScreen> {
   String? _selectedStopId; // id of selected stop (robust choice for Dropdown)
   fm.LatLng? _selectedStartLatLng; // Point picked on the map
   final MapController _mapController = MapController();
-  bool _forceShowMap = false; // debug toggle to force map rendering
+  final bool _forceShowMap = false; // debug toggle to force map rendering
   TimeOfDay? _selectedStartTime;
   // Polling state removed from onboarding — tracking handled on Driver map screen
 
   bool _isLoading = false;
   bool _isFetchingRoutes = true;
   String? _errorMessage;
-  final bool _isRouteSheetOpen = false;
-  bool _isRouteListExpanded = false;
   bool _isProfileSaved = false; // To control button visibility
-  bool _isTimeListExpanded = false;
 
   @override
   void initState() {
@@ -127,78 +121,96 @@ class _DriverOnboardingScreenState extends State<DriverOnboardingScreen> {
   Future<void> _fetchRouteDetails(String routeId) async {
     setState(() {
       _isLoading = true; // Use the main loader while fetching details. Dependent state is cleared in onChanged.
+      _errorMessage = null;
     });
-
+    final stopwatch = Stopwatch()..start();
+    debugPrint("[Onboarding] _fetchRouteDetails: Fetching details for routeId: $routeId...");
     try {
       final authService = Provider.of<AuthService>(context, listen: false);
       final token = authService.currentState.token;
+      if (token == null) {
+        setState(() {
+          _errorMessage = 'Authentication error: No token found. Please log in again.';
+          _isLoading = false;
+        });
+        return;
+      }
       final uri = Uri.parse('${ApiEndpoints.routes}$routeId/'); // e.g., /api/routes/route-1/
       final response = await http.get(uri, headers: {'Authorization': 'Bearer $token'});
-
+      debugPrint("[Onboarding] _fetchRouteDetails: Request took ${stopwatch.elapsedMilliseconds}ms. Status: ${response.statusCode}");
       if (response.statusCode == 200) {
         if (mounted) {
           setState(() {
-            _selectedRoute = AppRoute.fromJson(json.decode(response.body));
+            _selectedRoute = AppRoute.fromJson(json.decode(response.body) as Map<String, dynamic>);
           });
-          // Ensure the map recenters/fits the selected route after the frame renders
-          WidgetsBinding.instance.addPostFrameCallback((_) => _centerMapOnRoute());
+          debugPrint("[Onboarding] _fetchRouteDetails: Successfully parsed route '${_selectedRoute?.name}'.");
         }
       } else {
+        debugPrint("[Onboarding] _fetchRouteDetails: Failed with status ${response.statusCode}. Body: ${response.body}");
         throw Exception('Failed to load route details');
       }
     } catch (e) {
+      debugPrint("[Onboarding] _fetchRouteDetails: Exception after ${stopwatch.elapsedMilliseconds}ms. Error: $e");
       if (mounted) {
-        setState(() => _errorMessage = 'Could not load details for the selected route.');
+        setState(() {
+          _errorMessage = 'Could not load details for the selected route.';
+        });
       }
     } finally {
       if (mounted) setState(() => _isLoading = false);
     }
   }
 
-  void _centerMapOnRoute() {
+  Future<void> _centerMapOnRoute() async {
     if (_selectedRoute == null || _selectedRoute!.geometry.isEmpty) return;
-    try {
-      final pts = _selectedRoute!.geometry;
-      double minLat = pts.first.latitude, maxLat = pts.first.latitude;
-      double minLng = pts.first.longitude, maxLng = pts.first.longitude;
-      for (final p in pts) {
-        if (p.latitude < minLat) minLat = p.latitude;
-        if (p.latitude > maxLat) maxLat = p.latitude;
-        if (p.longitude < minLng) minLng = p.longitude;
-        if (p.longitude > maxLng) maxLng = p.longitude;
-      }
-      final center = fm.LatLng((minLat + maxLat) / 2.0, (minLng + maxLng) / 2.0);
-      // Move to center with a reasonable zoom; we avoid calling fitBounds for compatibility.
-      _mapController.move(center, 13.0);
-    } catch (e) {
+    if (mounted) {
       try {
-        final p = _selectedRoute!.geometry.first;
-        _mapController.move(p, 13.0);
-      } catch (_) {}
+        _mapController.fitCamera(
+          CameraFit.coordinates(
+            coordinates: _selectedRoute!.geometry,
+            padding: const EdgeInsets.all(50),
+          ),
+        );
+      } catch (e) {
+        debugPrint("Could not center map, it might not be ready yet. Error: $e");
+      }
     }
   }
 
   double _distanceToRouteMeters(fm.LatLng point) {
     // Compute minimum distance from point to any segment of the route polyline
     if (_selectedRoute == null || _selectedRoute!.geometry.isEmpty) return double.infinity;
-    final fm.Distance dist = fm.Distance();
     double minMeters = double.infinity;
 
     final coords = _selectedRoute!.geometry;
     for (int i = 0; i < coords.length - 1; i++) {
-      final a = coords[i];
-      final b = coords[i + 1];
-      // Convert to fm.LatLng
-      final latlngA = fm.LatLng(a.latitude, a.longitude);
-      final latlngB = fm.LatLng(b.latitude, b.longitude);
-      // Approximate by sampling projection: compute distance to endpoints and to segment midpoint
-      final d1 = dist(point, latlngA);
-      final d2 = dist(point, latlngB);
-      // rough segment distance: min(d1,d2)
-      final segMin = d1 < d2 ? d1 : d2;
-      if (segMin < minMeters) minMeters = segMin;
+      final p1 = coords[i];
+      final p2 = coords[i + 1];
+      final dist = _pointToSegmentDistance(point, p1, p2);
+      if (dist < minMeters) {
+        minMeters = dist;
+      }
     }
     return minMeters;
+  }
+
+  // Helper for point-to-line-segment distance calculation.
+  double _pointToSegmentDistance(fm.LatLng p, fm.LatLng a, fm.LatLng b) {
+    final double l2 = const fm.Distance().distance(a, b);
+    if (l2 == 0.0) return fm.Distance().as(fm.LengthUnit.Meter, p, a);
+
+    // Project p onto the line defined by a, b
+    final double t = ((p.latitude - a.latitude) * (b.latitude - a.latitude) + (p.longitude - a.longitude) * (b.longitude - a.longitude)) / l2;
+    final double tClamped = t.clamp(0.0, 1.0);
+
+    // Find the closest point on the segment
+    final closestPoint = fm.LatLng(
+      a.latitude + tClamped * (b.latitude - a.latitude),
+      a.longitude + tClamped * (b.longitude - a.longitude),
+    );
+
+    // Return the distance from p to that closest point
+    return fm.Distance().as(fm.LengthUnit.Meter, p, closestPoint);
   }
 
   void _onMapTap(fm.LatLng latlng) {
@@ -223,12 +235,29 @@ class _DriverOnboardingScreenState extends State<DriverOnboardingScreen> {
 
   Future<void> _submitForm() async {
     FocusScope.of(context).unfocus();
-    if (!(_formKey.currentState?.validate() ?? false)) {
+
+    final isFormValid = _formKey.currentState?.validate() ?? false;
+    debugPrint("[Onboarding] _submitForm: Form validation state: isFormValid = $isFormValid");
+
+    if (!isFormValid) {
+      debugPrint("[Onboarding] _submitForm: Aborting submission because form is invalid.");
       return;
     }
 
     // Additional validation for non-form fields before proceeding.
-    if (_selectedRouteId == null || _selectedStartLocation == null || _selectedStartTime == null) {
+    // A start location is valid if either a stop is chosen OR a point is tapped on the map.
+    final bool isLocationSelected = _selectedStopId != null || _selectedStartLatLng != null;
+
+    debugPrint("[Onboarding] _submitForm: --- Checking additional fields ---");
+    debugPrint("[Onboarding] _submitForm: _selectedRouteId = $_selectedRouteId");
+    debugPrint("[Onboarding] _submitForm: _selectedStopId = $_selectedStopId");
+    debugPrint("[Onboarding] _submitForm: _selectedStartLatLng = $_selectedStartLatLng");
+    debugPrint("[Onboarding] _submitForm: _selectedStartTime = ${_selectedStartTime?.format(context)}");
+    debugPrint("[Onboarding] _submitForm: isLocationSelected = $isLocationSelected");
+
+    // The route is considered selected if either its ID is present or the full route object has been loaded.
+    final bool isRouteSelected = _selectedRouteId != null || _selectedRoute != null;
+    if (!isRouteSelected || !isLocationSelected || _selectedStartTime == null) {
       setState(() {
         _errorMessage = 'Please complete all fields, including route, start location, and start time.';
         // This is a good place to trigger autovalidation to highlight missing fields.
@@ -238,7 +267,9 @@ class _DriverOnboardingScreenState extends State<DriverOnboardingScreen> {
     }
 
     // Safely capture the required values after validation.
-    final routeId = _selectedRouteId!;
+    // Use the ID from the full route object if available, as _selectedRouteId can become null during rebuilds.
+    final routeId = _selectedRoute?.id.toString() ?? _selectedRouteId;
+    if (routeId == null) return; // Should not happen due to validation, but as a final safeguard.
     final busCapacityText = _busCapacityController.text;
 
     String? isoStart;
@@ -253,6 +284,11 @@ class _DriverOnboardingScreenState extends State<DriverOnboardingScreen> {
       _errorMessage = null;
     });
 
+    debugPrint("[Onboarding] Submitting profile with:");
+    debugPrint("  > routeId: $routeId");
+    debugPrint("  > startStopId: $_selectedStopId");
+    debugPrint("  > startLat: ${_selectedStartLatLng?.latitude}, startLon: ${_selectedStartLatLng?.longitude}");
+
     final authService = Provider.of<AuthService>(context, listen: false);
     // Pass the selected stop ID and time to be stored in the auth state.
     final error = await authService.setupDriverProfile(
@@ -261,9 +297,11 @@ class _DriverOnboardingScreenState extends State<DriverOnboardingScreen> {
       phoneNumber: _phoneController.text,
       busPlateNumber: _busPlateController.text.toUpperCase(),
       busCapacity: int.parse(busCapacityText),
-      routeId: routeId,
+      routeId: routeId, // Now guaranteed to be non-null
       startStopId: _selectedStopId,
       startTime: isoStart,
+      startLat: _selectedStartLatLng?.latitude,
+      startLon: _selectedStartLatLng?.longitude,
       refreshToken: authService.currentState.refreshToken, // use refresh token if available
     );
 
@@ -332,12 +370,14 @@ class _DriverOnboardingScreenState extends State<DriverOnboardingScreen> {
                 _buildSectionHeader('Vehicle Information'),
                 _buildTextField(_busPlateController, 'Bus Plate Number (e.g., ABC-1234)', Icons.directions_bus_outlined),
                 const SizedBox(height: 16),
-                _buildTextField(_busCapacityController, 'Bus Capacity (e.g., 14)', Icons.group_outlined, keyboardType: TextInputType.number),
+                _buildTextField(_busCapacityController, 'Bus Capacity (e.g., 14)', Icons.group_outlined, keyboardType: TextInputType.number, isEnabled: !_isFetchingRoutes),
                 _buildSectionHeader('Route & Documents'),
                 // Add the route selection and dependent fields here.
                 _buildRouteDropdown(),
-                // Conditionally display start location and time pickers once a route is selected.
-                if (_selectedRouteId != null) ..._buildDynamicRouteFields(),
+                // Conditionally display start location and time pickers once a route is selected
+                // AND its details have been successfully fetched.
+                if (_selectedRoute != null) ..._buildDynamicRouteFields()
+                else if (_isLoading && _selectedRouteId != null) const Center(child: Padding(padding: EdgeInsets.all(16.0), child: Text("Loading route details...", style: TextStyle(color: Colors.white70)))),
                 const SizedBox(height: 40),
                 if (_errorMessage != null)
                   Padding(
@@ -349,19 +389,18 @@ class _DriverOnboardingScreenState extends State<DriverOnboardingScreen> {
                 else if (_isProfileSaved)
                   ElevatedButton(
                     onPressed: () {
-                      debugPrint("--- 'Start' button pressed on Onboarding screen ---");
-                      // Notify the app state that onboarding is fully complete.
-                      // This allows the GoRouter redirect to permit navigation to the dashboard.
+                      debugPrint("--- 'Done' button pressed on Onboarding screen ---");
+                      // Mark onboarding as complete and navigate back to the driver home screen.
                       Provider.of<AuthService>(context, listen: false).completeOnboarding();
-                      debugPrint("Navigating to /driver/dashboard...");
-                      GoRouter.of(context).go('/driver/dashboard');
+                      debugPrint("Navigating to /driver/home...");
+                      GoRouter.of(context).go('/driver/home');
                     },
                     style: ElevatedButton.styleFrom(
                       backgroundColor: const Color(0xFF2ED8C3),
                       padding: const EdgeInsets.symmetric(vertical: 16),
                       shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
                     ),
-                    child: Text('Start', style: GoogleFonts.urbanist(fontSize: 18, fontWeight: FontWeight.bold, color: Colors.black)),
+                    child: Text('Done', style: GoogleFonts.urbanist(fontSize: 18, fontWeight: FontWeight.bold, color: Colors.black)),
                   )
                 else
                   ElevatedButton(
@@ -393,10 +432,19 @@ class _DriverOnboardingScreenState extends State<DriverOnboardingScreen> {
   }
 
   List<Widget> _buildDynamicRouteFields() {
+    debugPrint("[Onboarding] _buildDynamicRouteFields: Rebuilding dynamic fields...");
+    debugPrint("[Onboarding] _buildDynamicRouteFields: _selectedRouteId = $_selectedRouteId");
+    debugPrint("[Onboarding] _buildDynamicRouteFields: _selectedRoute is ${ _selectedRoute == null ? 'null' : 'NOT null (name: ${_selectedRoute!.name})'}");
+    debugPrint("[Onboarding] _buildDynamicRouteFields: _selectedRoute geometry has ${_selectedRoute?.geometry.length ?? 0} points.");
+
+    final bool isRouteSelected = _selectedRouteId != null || _selectedRoute != null;
     // If we have a selected route with geometry, show a small map picker
     final hasGeometry = _selectedRoute != null && _selectedRoute!.geometry.isNotEmpty;
     final hasStops = _selectedRoute != null && _selectedRoute!.stops.isNotEmpty;
     final showMap = hasGeometry || _forceShowMap;
+
+    if (isRouteSelected) debugPrint("[Onboarding] _buildDynamicRouteFields: showMap = $showMap (hasGeometry: $hasGeometry, hasStops: $hasStops)");
+
     return [
       const SizedBox(height: 20),
       if (showMap) ...[
@@ -414,6 +462,7 @@ class _DriverOnboardingScreenState extends State<DriverOnboardingScreen> {
               initialCenter: (_selectedRoute != null && _selectedRoute!.geometry.isNotEmpty)
                   ? _selectedRoute!.geometry.first
                   : fm.LatLng(33.89365, 35.55166),
+              onMapReady: _centerMapOnRoute,
               initialZoom: 13.0,
               onTap: (tapPos, latlng) => _onMapTap(latlng),
             ),
@@ -441,22 +490,16 @@ class _DriverOnboardingScreenState extends State<DriverOnboardingScreen> {
                         point: fm.LatLng(s.location.latitude, s.location.longitude),
                           child: IconButton(
                             padding: const EdgeInsets.all(0),
-                            constraints: const BoxConstraints(minWidth: 28, minHeight: 28),
+                            constraints: const BoxConstraints(minWidth: 32, minHeight: 32),
                             onPressed: () {
-                              setState(() {
-                                _selectedStopId = s.id;
-                                _selectedStartLocation = s.order != null ? 'Stop ${s.order}' : '${s.location.latitude.toStringAsFixed(5)}, ${s.location.longitude.toStringAsFixed(5)}';
-                                _selectedStartLatLng = fm.LatLng(s.location.latitude, s.location.longitude);
-                                _errorMessage = null;
-                              });
-                              try {
-                                _mapController.move(_selectedStartLatLng!, 15.0);
-                              } catch (_) {}
+                              _selectStop(s);
                             },
-                            icon: Icon(Icons.location_on, color: Colors.blueAccent.withOpacity(0.95), size: 28),
+                            icon: Icon(Icons.location_on,
+                                color: _selectedStopId == s.id ? Colors.red : Colors.blueAccent.withOpacity(0.95),
+                                size: _selectedStopId == s.id ? 36 : 28),
                           ),
-                      ))
-                else if (_selectedStartLatLng != null)
+                      )),
+                if (_selectedStartLatLng != null && _selectedStopId == null)
                   Marker(
                     width: 36,
                     height: 36,
@@ -464,32 +507,48 @@ class _DriverOnboardingScreenState extends State<DriverOnboardingScreen> {
                     child: const Icon(Icons.location_on, color: Colors.red, size: 36),
                   ),
                 ]),
-              // Moving bus marker from simulator (if present)
-              // Moving bus marker removed from onboarding; tracking is on Driver map screen.
             ],
           ),
         ),
         const SizedBox(height: 12),
         // If the route has stops, show the dropdown below the map so the
         // driver can either tap a marker or pick from the list.
-        if (hasStops) ...[
-          _buildStartLocationDropdown(),
+        if (isRouteSelected) ...[
+          _buildStartLocationDropdown(isEnabled: hasStops),
           const SizedBox(height: 12),
         ],
       ] else ...[
-        _buildStartLocationDropdown(),
+        _buildStartLocationDropdown(isEnabled: isRouteSelected && hasStops),
         const SizedBox(height: 12),
       ],
 
       const SizedBox(height: 20),
-      _buildStartTimePicker(),
+      _buildStartTimePicker(isEnabled: isRouteSelected),
     ];
   }
 
-  Widget _buildTextField(TextEditingController controller, String label, IconData icon, {TextInputType? keyboardType}) {
+  void _selectStop(RouteStop stop) {
+    debugPrint("[Onboarding] _selectStop called for stop ID: ${stop.id}");
+    debugPrint("  > Location: Lat ${stop.location.latitude}, Lon ${stop.location.longitude}");
+
+    setState(() {
+      _selectedStopId = stop.id;
+      _selectedStartLocation = stop.order != null
+          ? 'Stop ${stop.order}'
+          : '${stop.location.latitude.toStringAsFixed(5)}, ${stop.location.longitude.toStringAsFixed(5)}';
+      _selectedStartLatLng = fm.LatLng(stop.location.latitude, stop.location.longitude);
+      _errorMessage = null;
+    });
+    try {
+      _mapController.move(_selectedStartLatLng!, 15.0);
+    } catch (_) {}
+  }
+
+  Widget _buildTextField(TextEditingController controller, String label, IconData icon, {TextInputType? keyboardType, bool isEnabled = true}) {
     return TextFormField(
       controller: controller,
       keyboardType: keyboardType,
+      enabled: isEnabled,
       style: const TextStyle(color: Colors.white),
       decoration: InputDecoration(
         labelText: label,
@@ -507,7 +566,7 @@ class _DriverOnboardingScreenState extends State<DriverOnboardingScreen> {
         if (value == null || value.isEmpty) {
           return '$label is required';
         }
-        if (keyboardType == TextInputType.number && int.tryParse(value) == null) {
+        if (label.contains('Capacity') && (int.tryParse(value) == null || int.parse(value) <= 0)) {
           return 'Please enter a valid number';
         }
         if (label.contains('Bus Plate') && !RegExp(r'^[A-Z]{1,4}-\d{1,4}$').hasMatch(value)) {
@@ -554,20 +613,8 @@ class _DriverOnboardingScreenState extends State<DriverOnboardingScreen> {
       );
     }
 
-    // Debug button to force map visibility when troubleshooting (development only)
-    Widget debugButton = Padding(
-      padding: const EdgeInsets.only(top: 8.0),
-      child: ElevatedButton(
-        onPressed: () {
-          setState(() => _forceShowMap = !_forceShowMap);
-        },
-        style: ElevatedButton.styleFrom(backgroundColor: const Color(0xFF2ED8C3)),
-        child: Text(_forceShowMap ? 'Hide Map (debug)' : 'Show Map (debug)', style: const TextStyle(color: Colors.black)),
-      ),
-    );
-
     final currentRouteIds = _availableRoutes.map((r) => r.id).toSet();
-    final hasValidRouteSelection = _selectedRouteId != null && currentRouteIds.contains(_selectedRouteId);
+    final hasValidRouteSelection = _selectedRouteId != null && currentRouteIds.contains(int.tryParse(_selectedRouteId!) ?? -1);
     final safeSelectedRouteId = hasValidRouteSelection ? _selectedRouteId : null;
     // Clear an invalid selection on the next frame to avoid Dropdown assertion.
     if (!hasValidRouteSelection && _selectedRouteId != null) {
@@ -582,85 +629,51 @@ class _DriverOnboardingScreenState extends State<DriverOnboardingScreen> {
       });
     }
 
-    return Column(children: [
-      GestureDetector(
-        onTap: () {
-          setState(() => _isRouteListExpanded = !_isRouteListExpanded);
-        },
-        child: AbsorbPointer(
-          child: TextFormField(
-            key: ValueKey('route-picker-${_availableRoutes.length}-${safeSelectedRouteId ?? 'none'}'),
-            readOnly: true,
-            controller: TextEditingController(text: _selectedRoute?.name ?? ''),
-            style: const TextStyle(color: Colors.white),
-            decoration: InputDecoration(
-              labelText: 'Select Your Operating Route',
-              labelStyle: TextStyle(color: Colors.grey[400]),
-              prefixIcon: const Icon(Icons.route_outlined, color: Colors.white70),
-              suffixIcon: Icon(
-                _isRouteListExpanded ? Icons.keyboard_arrow_up : Icons.keyboard_arrow_down,
-                color: Colors.white70,
-              ),
-              filled: true,
-              fillColor: const Color(0xFF1F2327),
-              border: OutlineInputBorder(
-                borderRadius: BorderRadius.circular(12),
-                borderSide: BorderSide.none,
-              ),
-              focusedBorder: OutlineInputBorder(
-                borderRadius: BorderRadius.circular(12),
-                borderSide: const BorderSide(color: Color(0xFF2ED8C3)),
-              ),
-            ),
-            validator: (_) => safeSelectedRouteId == null ? 'Route selection is required' : null,
-          ),
+    return DropdownButtonFormField<String>(
+      value: safeSelectedRouteId,
+      onChanged: (newRouteId) async {
+        if (newRouteId == null) return;
+        setState(() {
+          _selectedRouteId = newRouteId;
+          _selectedRoute = null; // Clear details of previous route
+          _selectedStopId = null;
+          _selectedStartLocation = null;
+          debugPrint("[Onboarding] Route changed to $newRouteId. Clearing dependent state and fetching details.");
+        });
+        await _fetchRouteDetails(newRouteId);
+      },
+      items: _availableRoutes.map((route) {
+        return DropdownMenuItem<String>(
+          value: route.id.toString(),
+          child: Text(route.name),
+        );
+      }).toList(),
+      hint: const Text('Select Your Operating Route'),
+      style: const TextStyle(color: Colors.white),
+      dropdownColor: const Color(0xFF1F2327),
+      decoration: InputDecoration(
+        filled: true,
+        fillColor: const Color(0xFF1F2327),
+        prefixIcon: const Icon(Icons.route_outlined, color: Colors.white70),
+        border: OutlineInputBorder(borderRadius: BorderRadius.circular(12), borderSide: BorderSide.none),
+        focusedBorder: OutlineInputBorder(
+          borderRadius: BorderRadius.circular(12),
+          borderSide: const BorderSide(color: Color(0xFF2ED8C3)),
         ),
       ),
-      if (_isRouteListExpanded)
-        Container(
-          margin: const EdgeInsets.only(top: 8),
-          decoration: BoxDecoration(
-            color: const Color(0xFF1F2327),
-            borderRadius: BorderRadius.circular(12),
-            border: Border.all(color: const Color(0xFF2ED8C3).withOpacity(0.4)),
-          ),
-          constraints: const BoxConstraints(maxHeight: 220),
-          child: ListView.separated(
-            shrinkWrap: true,
-            itemCount: _availableRoutes.length,
-            separatorBuilder: (_, __) => const Divider(color: Colors.white12, height: 1),
-            itemBuilder: (_, index) {
-              final route = _availableRoutes[index];
-              final isSelected = route.id == _selectedRouteId;
-              return ListTile(
-                title: Text(route.name, style: const TextStyle(color: Colors.white)),
-                trailing: isSelected ? const Icon(Icons.check, color: Color(0xFF2ED8C3)) : null,
-                onTap: () async {
-                  setState(() {
-                    _selectedRouteId = route.id;
-                    _selectedRoute = null;
-                    _selectedStopId = null;
-                    _selectedStartLocation = null;
-                    _isRouteListExpanded = false;
-                  });
-                  await _fetchRouteDetails(route.id);
-                },
-              );
-            },
-          ),
-        ),
-      debugButton,
-    ]);
+      validator: (value) => value == null ? 'Route selection is required' : null,
+    );
   }
 
-  Widget _buildStartLocationDropdown() {
+  Widget _buildStartLocationDropdown({bool isEnabled = true}) {
     // Use stops provided by the selected route when available.
     final routeStops = _selectedRoute?.stops ?? [];
 
-    if (routeStops.isEmpty) {
+    if (isEnabled && routeStops.isEmpty) {
       return const Text(
-        'This route has no defined stops. Please select another route or use the map picker.',
+        'This route has no defined stops. Please pick a start point on the map.',
         style: TextStyle(color: Colors.amber),
+        textAlign: TextAlign.center,
       );
     }
 
@@ -693,20 +706,10 @@ class _DriverOnboardingScreenState extends State<DriverOnboardingScreen> {
     return DropdownButtonFormField<String>(
       key: ValueKey('start-stop-dropdown-${_selectedRoute?.id ?? 'none'}-${routeStops.length}-${safeSelectedStopId ?? 'none'}'),
       value: safeSelectedStopId,
-      onChanged: (newStopId) async {
+      onChanged: !isEnabled ? null : (newStopId) async {
         if (newStopId == null) return;
-        final chosen = routeStops.firstWhere((s) => s.id == newStopId, orElse: () => routeStops.first);
-        setState(() {
-          _selectedStopId = chosen.id;
-          _selectedStartLocation = chosen.order != null
-              ? 'Stop ${chosen.order}'
-              : '${chosen.location.latitude.toStringAsFixed(5)}, ${chosen.location.longitude.toStringAsFixed(5)}';
-          _selectedStartLatLng = fm.LatLng(chosen.location.latitude, chosen.location.longitude);
-          _errorMessage = null;
-        });
-        try {
-          _mapController.move(_selectedStartLatLng!, 15.0);
-        } catch (_) {}
+        final chosenStop = routeStops.firstWhere((s) => s.id == newStopId);
+        _selectStop(chosenStop);
       },
       items: dropdownItems,
       hint: const Text('Select Your Starting Location'),
@@ -729,75 +732,43 @@ class _DriverOnboardingScreenState extends State<DriverOnboardingScreen> {
     );
   }
 
-  Widget _buildStartTimePicker() {
+  Widget _buildStartTimePicker({bool isEnabled = true}) {
     final times = List<TimeOfDay>.generate(96, (i) {
       final hour = i ~/ 4;
       final minute = (i % 4) * 15;
       return TimeOfDay(hour: hour, minute: minute);
     });
 
-    return Column(
-      crossAxisAlignment: CrossAxisAlignment.stretch,
-      children: [
-        GestureDetector(
-          onTap: () async {
-            setState(() => _isTimeListExpanded = !_isTimeListExpanded);
-          },
-          child: AbsorbPointer(
-            child: TextFormField(
-              // Use a controller to display the formatted time
-              controller: TextEditingController(text: _selectedStartTime?.format(context) ?? ''),
-              style: const TextStyle(color: Colors.white),
-              decoration: InputDecoration(
-                labelText: 'Select Start Time',
-                labelStyle: TextStyle(color: Colors.grey[400]),
-                prefixIcon: const Icon(Icons.access_time_outlined, color: Colors.white70),
-                filled: true,
-                fillColor: const Color(0xFF1F2327),
-                border: OutlineInputBorder(
-                  borderRadius: BorderRadius.circular(12),
-                  borderSide: BorderSide.none,
-                ),
-                focusedBorder: OutlineInputBorder(
-                  borderRadius: BorderRadius.circular(12),
-                  borderSide: const BorderSide(color: Color(0xFF2ED8C3)),
-                ),
-              ),
-              validator: (value) => _selectedStartTime == null ? 'Start time is required' : null,
-            ),
-          ),
+    return DropdownButtonFormField<TimeOfDay>(
+      value: _selectedStartTime,
+      onChanged: !isEnabled ? null : (newTime) {
+        if (newTime != null) {
+          setState(() => _selectedStartTime = newTime);
+        }
+      },
+      items: times.map((time) {
+        return DropdownMenuItem<TimeOfDay>(
+          value: time,
+          child: Text(time.format(context)),
+        );
+      }).toList(),
+      hint: const Text('Select Start Time'),
+      style: const TextStyle(color: Colors.white),
+      dropdownColor: const Color(0xFF1F2327),
+      decoration: InputDecoration(
+        filled: true,
+        fillColor: const Color(0xFF1F2327),
+        prefixIcon: const Icon(Icons.access_time_outlined, color: Colors.white70),
+        border: OutlineInputBorder(
+          borderRadius: BorderRadius.circular(12),
+          borderSide: BorderSide.none,
         ),
-        if (_isTimeListExpanded)
-          Container(
-            margin: const EdgeInsets.only(top: 8),
-            decoration: BoxDecoration(
-              color: const Color(0xFF1F2327),
-              borderRadius: BorderRadius.circular(12),
-              border: Border.all(color: const Color(0xFF2ED8C3).withOpacity(0.4)),
-            ),
-            constraints: const BoxConstraints(maxHeight: 220),
-            child: ListView.builder(
-              shrinkWrap: true,
-              itemCount: times.length,
-              itemBuilder: (_, idx) {
-                final t = times[idx];
-                final isSelected = _selectedStartTime != null &&
-                    _selectedStartTime!.hour == t.hour &&
-                    _selectedStartTime!.minute == t.minute;
-                return ListTile(
-                  title: Text(t.format(context), style: const TextStyle(color: Colors.white)),
-                  trailing: isSelected ? const Icon(Icons.check, color: Color(0xFF2ED8C3)) : null,
-                  onTap: () {
-                    setState(() {
-                      _selectedStartTime = t;
-                      _isTimeListExpanded = false;
-                    });
-                  },
-                );
-              },
-            ),
-          ),
-      ],
+        focusedBorder: OutlineInputBorder(
+          borderRadius: BorderRadius.circular(12),
+          borderSide: const BorderSide(color: Color(0xFF2ED8C3)),
+        ),
+      ),
+      validator: (value) => value == null ? 'Start time is required' : null,
     );
   }
 }

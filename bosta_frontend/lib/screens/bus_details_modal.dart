@@ -78,8 +78,6 @@ class _BusDetailsModalState extends State<BusDetailsModal> {
       // If bus hasn't reported in over 5 minutes, consider it offline/completed
       if (DateTime.now().difference(lastReportTime).inMinutes > 5) {
         _tripStatus = "Completed";
-        _tripProgress = 1.0;
-        return;
       }
     }
 

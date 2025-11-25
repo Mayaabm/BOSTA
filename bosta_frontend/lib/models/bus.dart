@@ -1,3 +1,5 @@
+import 'app_route.dart';
+
 class EtaDuration {
   final int hours;
   final int minutes;
@@ -31,6 +33,7 @@ class Bus {
   final String? driverName;
   final double? driverRating;
   final String? lastReportedAt;
+  final AppRoute? route;
   final EtaDuration? eta;
 
   Bus({
@@ -44,6 +47,7 @@ class Bus {
     this.driverName,
     this.driverRating,
     this.lastReportedAt,
+    this.route,
     this.eta,
   });
 
@@ -59,6 +63,7 @@ class Bus {
       driverName: json['driver']?['name'], // Assuming nested driver object
       driverRating: (json['driver']?['rating'] as num?)?.toDouble(),
       lastReportedAt: json['last_reported_at'],
+      route: json['route'] != null ? AppRoute.fromJson(json['route']) : null,
       eta: json['eta'] != null ? EtaDuration.fromJson(json['eta']) : null,
     );
   }

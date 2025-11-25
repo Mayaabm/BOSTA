@@ -2,6 +2,7 @@ import 'dart:async';
 import 'package:flutter/cupertino.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_map/flutter_map.dart';
+import 'package:flutter/foundation.dart'; // Import for kDebugMode
 import 'package:bosta_frontend/models/user_location.dart';
 import 'package:geolocator/geolocator.dart';
 import 'package:google_fonts/google_fonts.dart';
@@ -9,7 +10,7 @@ import 'package:latlong2/latlong.dart';
 import 'package:sliding_up_panel/sliding_up_panel.dart';
 
 import '../models/bus.dart'; // Using the actual model
-import '../models/route_model.dart'; // Using the actual model
+import '../models/app_route.dart'; // Using the unified route model
 import '../services/bus_service.dart'; // Using the actual service
 import '../services/route_service.dart'; // Using the actual service
 import 'bus_bottom_sheet.dart';
@@ -33,10 +34,10 @@ class _RiderHomeScreenState extends State<RiderHomeScreen> with TickerProviderSt
   Timer? _busUpdateTimer;
 
   // State for Route 224
-  static const String _targetRouteId = '224';
-  AppRoute? _route224;
+  // static const String _targetRouteId = '224'; // No longer needed for nearby buses
+  AppRoute? _selectedBusRoute; // To store the route of the *selected* bus
   List<Bus> _busesOnRoute = [];
-  bool _isNearRoute = false;
+  // bool _isNearRoute = false; // No longer needed, we fetch based on location
 
   RiderView _currentView = RiderView.planTrip;
   final List<Bus> _suggestedBuses = []; // For trip planning
@@ -59,7 +60,7 @@ class _RiderHomeScreenState extends State<RiderHomeScreen> with TickerProviderSt
       duration: const Duration(seconds: 1),
     )..repeat(reverse: true);
 
-    _initLocationAndRoute();
+    _initializeUserLocation();
     _listenToMapEvents();
   }
 
@@ -73,87 +74,62 @@ class _RiderHomeScreenState extends State<RiderHomeScreen> with TickerProviderSt
     super.dispose();
   }
 
-  // --- Location and Data Fetching ---
+  Future<void> _initializeUserLocation() async {
+    // In debug mode, simulate the rider's location to be near a stop for consistent testing.
+    if (kDebugMode) {
+      debugPrint("--- RIDER SIMULATION: ACTIVE (Debug Mode) ---");
+      // Simulate a location in Jbeil for testing
+      const mockLatitude = 34.1216;
+      const mockLongitude = 35.6489;
 
-  Future<void> _initLocationAndRoute() async {
-    try {
+      final mockPosition = Position(
+        latitude: mockLatitude,
+        longitude: mockLongitude,
+        timestamp: DateTime.now(),
+        accuracy: 5.0, altitude: 0, heading: 0, speed: 0, speedAccuracy: 0, altitudeAccuracy: 0.0, headingAccuracy: 0.0
+      );
+
+      debugPrint("Simulating rider location at: (${mockPosition.latitude}, ${mockPosition.longitude})");
+      if (mounted) setState(() => _currentPosition = mockPosition);
+    } else {
+      // In release mode, or if the route isn't available for simulation, use real GPS.
       await Geolocator.requestPermission();
       final position = await Geolocator.getCurrentPosition();
-      if (mounted) {
-        setState(() => _currentPosition = position);
-        mapController.move(LatLng(position.latitude, position.longitude), 14.0);
-        _startListeningToLocation(); // Start listening for continuous location updates
-        _startPeriodicBusUpdates();
-      }
+      if (mounted) setState(() => _currentPosition = position);
+      _startListeningToLocation(); // Start listening for real location updates.
+    }
 
-      // 2. After location is successful, fetch the route data.
-      // This is now in a separate try-catch so it doesn't block map initialization.
-      try {
-        final route = await RouteService.getRouteById(_targetRouteId);
-        if (mounted) {
-          setState(() => _route224 = route);
-          // Check proximity now that we have both location and route
-          _checkProximityToRoute();
-        }
-      } catch (e) {
-        debugPrint("----------- ROUTE FETCH ERROR -----------");
-        debugPrint("Could not fetch route '$_targetRouteId'. The map will function without it. Error: $e");
-        // We don't show a snackbar here to avoid bothering the user if the backend is just down.
-        // The app will still be usable.
-      }
-
-    } catch (e) {
-      // This catch block now only handles critical location failures.
-      debugPrint("----------- LOCATION ERROR -----------");
-      debugPrint("Failed to get user location: $e");
-      if (mounted) {
-        ScaffoldMessenger.of(context).showSnackBar(
-          const SnackBar(
-            content: Text("Could not get location. Please enable location services and grant permission."),
-          ),
-        );
+    // Once location is set (real or mock), move the map and start fetching buses.
+    if (_currentPosition != null) {
+      mapController.move(LatLng(_currentPosition!.latitude, _currentPosition!.longitude), 14.0);
+      // If the initial view is 'Nearby Buses', load them immediately.
+      if (_currentView == RiderView.nearbyBuses) {
+        _loadNearbyBuses();
       }
     }
+  }
+
+  /// Fetches the target route and checks for nearby buses.
+  /// This is now called explicitly when the user wants to see nearby buses.
+  Future<void> _loadNearbyBuses() async {
+    // We just need to fetch buses and start the timer.
+    // The route information is no longer needed upfront.
+    await _fetchNearbyBuses();
+    _startPeriodicBusUpdates();
   }
 
   void _startListeningToLocation() {
     _positionStream?.cancel();
     _positionStream = Geolocator.getPositionStream().listen((Position position) {
       if (mounted) {
-        setState(() => _currentPosition = position);
-        _checkProximityToRoute(); // Check proximity on every location update
+        setState(() {
+          _currentPosition = position;
+          // If we are auto-centering on a bus, we might not want to move the map here.
+          // For now, we just update the position data.
+        });
       }
     });
   }
-
-  void _checkProximityToRoute() {
-    if (_currentPosition == null || _route224 == null) return;
-
-    final userPoint = LatLng(_currentPosition!.latitude, _currentPosition!.longitude);
-    bool isCurrentlyNear = false;
-
-    // Check if user is within 300m of any point on the route polyline
-    for (final routePoint in _route224!.geometry) {
-      final distance = const Distance().as(LengthUnit.Meter, userPoint, routePoint);
-      if (distance <= 300) {
-        isCurrentlyNear = true;
-        break;
-      }
-    }
-
-    if (isCurrentlyNear != _isNearRoute) {
-      setState(() {
-        _isNearRoute = isCurrentlyNear;
-        if (!_isNearRoute) {
-          _busesOnRoute.clear(); // Hide buses when user moves away
-          _selectedBus = null; // Deselect bus
-        } else {
-          _fetchBusesForRoute(); // Fetch buses when user is near
-        }
-      });
-    }
-  }
-
   void _listenToMapEvents() {
     mapController.mapEventStream.listen((event) {
       // If the user manually moves the map (e.g., pan or pinch zoom)
@@ -187,22 +163,24 @@ class _RiderHomeScreenState extends State<RiderHomeScreen> with TickerProviderSt
   void _startPeriodicBusUpdates() {
     _busUpdateTimer = Timer.periodic(
       const Duration(seconds: 10),
-      (_) {
-        if (_isNearRoute) {
-          _fetchBusesForRoute();
+      (timer) {
+        // Only fetch if the "Nearby Buses" view is active.
+        if (_currentView == RiderView.nearbyBuses) {
+          _fetchNearbyBuses();
+        } else {
+          timer.cancel(); // Stop polling if user switches away
         }
       },
     );
   }
 
-  Future<void> _fetchBusesForRoute() async {
+  Future<void> _fetchNearbyBuses() async {
+    if (_currentPosition == null) return;
     try {
-      final buses = await BusService.getBusesForRoute(_targetRouteId);
-      if (mounted) {
-        setState(() => _busesOnRoute = buses);
-      }
+      final buses = await BusService.getNearbyBuses(latitude: _currentPosition!.latitude, longitude: _currentPosition!.longitude);
+      if (mounted) setState(() => _busesOnRoute = buses);
     } catch (e) {
-      debugPrint("Error fetching buses for route $_targetRouteId: $e");
+      debugPrint("Error fetching nearby buses: $e");
     }
   }
 
@@ -211,6 +189,7 @@ class _RiderHomeScreenState extends State<RiderHomeScreen> with TickerProviderSt
       _selectedBus = bus;
       _isAutoCentering = true; // Enable auto-centering
       _centerOnSelectedBus(); // Immediately move map to the bus
+      _fetchRouteForSelectedBus(bus.id); // Fetch the route for the selected bus
     });
 
     // Stop any previous timer
@@ -249,6 +228,7 @@ class _RiderHomeScreenState extends State<RiderHomeScreen> with TickerProviderSt
       _selectedBus = null;
       _selectedBusDetailsTimer?.cancel();
       _markerAnimation = null;
+      _selectedBusRoute = null; // Clear the route when deselecting
       _isAutoCentering = false;
     });
   }
@@ -282,6 +262,17 @@ class _RiderHomeScreenState extends State<RiderHomeScreen> with TickerProviderSt
     }
   }
 
+  Future<void> _fetchRouteForSelectedBus(String busId) async {
+    try {
+      // We get the bus details which should contain the route object
+      final bus = await BusService.getBusDetails(busId);
+      if (mounted && bus.route != null) {
+        setState(() => _selectedBusRoute = bus.route);
+      }
+    } catch (e) {
+      debugPrint("Could not fetch route for selected bus $busId: $e");
+    }
+  }
   // --- UI Build Method ---
   @override
   Widget build(BuildContext context) {
@@ -306,10 +297,8 @@ class _RiderHomeScreenState extends State<RiderHomeScreen> with TickerProviderSt
           suggestedBuses: _suggestedBuses,
           nearbyBuses: _busesOnRoute, // Show buses from Route 224 in the panel
           onBusSelected: (bus) {
-            // This is the "Choose Bus" action
-            ScaffoldMessenger.of(context).showSnackBar(
-              SnackBar(content: Text("Starting trip with Bus ${bus.plateNumber}... (UI Placeholder)")),
-            );
+            // When a bus is tapped in the list, treat it like a map marker tap.
+            _onBusMarkerTapped(bus);
           },
         ),
         body: Stack(
@@ -327,11 +316,11 @@ class _RiderHomeScreenState extends State<RiderHomeScreen> with TickerProviderSt
                   subdomains: const ['a', 'b', 'c', 'd'],
                   userAgentPackageName: 'com.bosta.app',
                 ),
-                if (_isNearRoute && _route224 != null)
+                if (_selectedBus != null && _selectedBusRoute != null)
                   PolylineLayer(
                     polylines: [
                       Polyline(
-                        points: _route224!.geometry,
+                        points: _selectedBusRoute!.geometry,
                         color: _selectedBus != null
                             ? const Color(0xFF2ED8C3) // Highlight in solid teal when selected
                             : Colors.grey.withOpacity(0.5),
@@ -351,7 +340,7 @@ class _RiderHomeScreenState extends State<RiderHomeScreen> with TickerProviderSt
                   )
                 else
                   MarkerLayer(markers: [
-                      if (_isNearRoute && _selectedBus == null) ..._buildAllBusMarkers(),
+                      if (_currentView == RiderView.nearbyBuses && _selectedBus == null) ..._buildAllBusMarkers(),
                       if (_currentPosition != null) _buildUserLocationMarker(),
                       if (_selectedBus != null) _buildSelectedBusMarker(),
                     ]),
@@ -412,8 +401,8 @@ class _RiderHomeScreenState extends State<RiderHomeScreen> with TickerProviderSt
   void _onViewChanged(RiderView newView) {
     setState(() {
       _currentView = newView;
-      if (newView == RiderView.nearbyBuses && _isNearRoute) {
-        _fetchBusesForRoute();
+      if (newView == RiderView.nearbyBuses) {
+        _loadNearbyBuses(); // Fetch buses and start polling
       }
     });
   }
@@ -431,7 +420,7 @@ class _RiderHomeScreenState extends State<RiderHomeScreen> with TickerProviderSt
           child: _BusMarker(
             pulseController: _pulseController,
             isSelected: false,
-            busColor: const Color(0xFF2ED8C3),
+            busColor: const Color(0xFF2ED8C3), // Use a static color as bus-specific color isn't available
           ),
         ),
       );
@@ -512,7 +501,8 @@ class _RiderHomeScreenState extends State<RiderHomeScreen> with TickerProviderSt
               padding: const EdgeInsets.all(4),
               onValueChanged: (view) {
                 if (view != null) {
-                  _onViewChanged(view); // This will now work
+                  // The view change itself is handled here
+                  _onViewChanged(view);
                 }
               },
               children: {

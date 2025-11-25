@@ -129,6 +129,33 @@ def buses_nearby(request):
     return Response(serializer.data)
 
 @api_view(['GET'])
+def buses_for_route(request):
+    """
+    Returns a list of all active buses assigned to a specific route.
+    Query params: route_id
+    """
+    route_id = request.query_params.get('route_id')
+    if not route_id:
+        return Response({"error": "route_id is a required query parameter."}, status=400)
+
+    # Find all active trips for the given route.
+    # A trip is considered active if it has started but not yet finished.
+    active_trips = Trip.objects.filter(
+        route_id=route_id,
+        status=Trip.STATUS_STARTED
+    ).select_related('bus')
+
+    # Extract the buses from these active trips.
+    # We only want buses that have a recently updated location.
+    buses = [
+        trip.bus for trip in active_trips 
+        if trip.bus and trip.bus.current_location is not None and trip.bus.last_reported_at > timezone.now() - timedelta(hours=2)
+    ]
+
+    serializer = BusNearbySerializer(buses, many=True)
+    return Response(serializer.data)
+
+@api_view(['GET'])
 def route_list(request):
     """
     Returns a list of all routes, including their geometry and stops.
@@ -644,15 +671,31 @@ def start_trip(request, trip_id):
             # Extract coordinates from LineString geometry: sequence of (lon, lat)
             coords = list(route.geometry.coords)
             # Convert coords to list of (lat, lon) for our app LatLng usage
-            points = [(c[1], c[0]) for c in coords]
+            points = [Point(c[0], c[1], srid=4326) for c in coords]
+
+            start_index = 0
+            if t.current_stop and t.current_stop.location:
+                # Find the point in the geometry that is closest to the starting stop's location.
+                # This makes the simulation start from the correct point on the polyline.
+                min_dist = float('inf')
+                for i, point in enumerate(points):
+                    dist = t.current_stop.location.distance(point)
+                    if dist < min_dist:
+                        min_dist = dist
+                        start_index = i
+                
+                if start_index > 0:
+                    logger.info(f"Simulation for trip {t.id} will start at index {start_index} (closest to stop {t.current_stop.id}).")
 
             # Simple step-through simulation: visit each point, create VehiclePosition
-            for i in range(len(points)):
-                lat, lon = points[i]
+            # Start the loop from the calculated start_index.
+            for i in range(start_index, len(points)):
+                point = points[i]
+                lon, lat = point.x, point.y
                 # compute heading towards next point if available
                 heading = None
                 if i < len(points) - 1:
-                    nlat, nlon = points[i + 1]
+                    nlon, nlat = points[i + 1].x, points[i + 1].y
                     dy = nlat - lat
                     dx = nlon - lon
                     heading = math.degrees(math.atan2(dy, dx))

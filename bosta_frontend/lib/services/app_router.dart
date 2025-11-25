@@ -1,8 +1,9 @@
 import 'package:flutter/material.dart';
 import 'package:go_router/go_router.dart';
 import '../screens/auth_screen.dart';
-import '../screens/register_screen.dart'; // Keep this for the route definition
-import 'driver_dashboard.dart' as driver_map; // Import the REAL dashboard with a unique name
+import '../screens/driver_home_screen.dart'; // Corrected import path
+import '../screens/register_screen.dart';
+import '../screens/driver_dashboard_screen.dart'; // Corrected import path
 import '../screens/driver_onboarding_screen.dart';
 import '../screens/rider_home_screen.dart';
 import 'auth_service.dart';
@@ -28,10 +29,13 @@ class AppRouter {
           builder: (context, state) => const RiderHomeScreen(),
         ),
         GoRoute(
+          path: '/driver/home',
+          builder: (context, state) => const DriverHomeScreen(), // This should now resolve correctly
+        ),
+        GoRoute(
           path: '/driver/dashboard',
           builder: (context, state) {
-            // Use the uniquely named import to ensure we get the correct screen
-            return const driver_map.DriverDashboardScreen();
+            return const DriverDashboardScreen(); // The const is valid for the correct screen
           },
         ),
         GoRoute(
@@ -57,9 +61,9 @@ class AppRouter {
           if (driverInfo == null || !driverInfo.onboardingComplete) {
             return currentLocation == '/driver/onboarding' ? null : '/driver/onboarding';
           }
-          // Rule 2b: If onboarding IS complete and they are on an auth or onboarding page, send them to the dashboard.
+          // Rule 2b: If onboarding IS complete and they are on an auth or onboarding page, send them to their new home screen.
           if (isLoggingIn || currentLocation == '/driver/onboarding') {
-            return '/driver/dashboard';
+            return '/driver/home';
           }
         } else if (authState.role == UserRole.rider) {
           // Rule 2c: If they are a rider and on an auth page, send them to their home.

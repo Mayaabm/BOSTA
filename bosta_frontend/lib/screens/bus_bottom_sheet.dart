@@ -1,8 +1,6 @@
 import 'package:flutter/material.dart';
 import 'package:google_fonts/google_fonts.dart';
-
-import '../../../../models/bus.dart';
-import 'bus_suggestion_card.dart';
+import '../models/bus.dart';
 import 'rider_home_screen.dart';
 
 class BusBottomSheet extends StatelessWidget {
@@ -10,7 +8,7 @@ class BusBottomSheet extends StatelessWidget {
   final RiderView currentView;
   final List<Bus> suggestedBuses;
   final List<Bus> nearbyBuses;
-  final ValueChanged<Bus> onBusSelected;
+  final Function(Bus) onBusSelected;
 
   const BusBottomSheet({
     super.key,
@@ -23,93 +21,121 @@ class BusBottomSheet extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    final isPlanTrip = currentView == RiderView.planTrip;
-    final busesToShow = isPlanTrip ? suggestedBuses : nearbyBuses;
+    final busesToShow = currentView == RiderView.nearbyBuses ? nearbyBuses : suggestedBuses;
+    final title = currentView == RiderView.nearbyBuses ? "Nearby Buses" : "Suggested Trips";
 
-    return ClipRRect(
-      borderRadius: const BorderRadius.vertical(top: Radius.circular(24.0)),
-      child: Container(
-        decoration: BoxDecoration(
-          gradient: LinearGradient(
-            begin: Alignment.topCenter,
-            end: Alignment.bottomCenter,
-            colors: [
-              const Color(0xFF1A2025).withOpacity(0.95),
-              const Color(0xFF12161A).withOpacity(0.98),
-            ],
+    return Container(
+      decoration: const BoxDecoration(
+        color: Color(0xFF1F2327),
+        borderRadius: BorderRadius.vertical(top: Radius.circular(24.0)),
+        boxShadow: [
+          BoxShadow(
+            blurRadius: 20.0,
+            color: Colors.black54,
           ),
-        ),
-        child: Column(
-          children: [
-            _buildDragHandle(),
-            Padding(
-              padding: const EdgeInsets.symmetric(horizontal: 24.0, vertical: 8.0),
-              child: Text(
-                isPlanTrip ? "Suggested Routes" : "Nearby Buses",
-                style: GoogleFonts.urbanist(
-                  fontSize: 22,
-                  fontWeight: FontWeight.bold,
-                  color: Colors.white,
-                ),
+        ],
+      ),
+      child: Column(
+        children: [
+          const SizedBox(height: 12),
+          Container(
+            width: 40,
+            height: 5,
+            decoration: BoxDecoration(
+              color: Colors.grey[700],
+              borderRadius: BorderRadius.circular(12.0),
+            ),
+          ),
+          Padding(
+            padding: const EdgeInsets.all(16.0),
+            child: Text(
+              title,
+              style: GoogleFonts.urbanist(
+                fontSize: 20,
+                fontWeight: FontWeight.bold,
+                color: Colors.white,
               ),
             ),
-            Expanded(
-              child: busesToShow.isEmpty
-                  ? _buildEmptyState(isPlanTrip)
-                  : ListView.builder(
-                      controller: scrollController,
-                      padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 8),
-                      itemCount: busesToShow.length,
-                      itemBuilder: (context, index) {
-                        final bus = busesToShow[index];
-                        return BusSuggestionCard(
-                          bus: bus,
-                          onChooseBus: () => onBusSelected(bus),
-                        );
-                      },
-                    ),
-            ),
-          ],
-        ),
+          ),
+          Expanded(
+            child: busesToShow.isEmpty
+                ? _buildEmptyState()
+                : ListView.builder(
+                    controller: scrollController,
+                    itemCount: busesToShow.length,
+                    itemBuilder: (context, index) {
+                      final bus = busesToShow[index];
+                      return _buildBusListItem(context, bus);
+                    },
+                  ),
+          ),
+        ],
       ),
     );
   }
 
-  Widget _buildDragHandle() {
-    return Container(
-      width: 40,
-      height: 5,
-      margin: const EdgeInsets.symmetric(vertical: 12.0),
-      decoration: BoxDecoration(
-        color: Colors.grey[700],
-        borderRadius: BorderRadius.circular(12.0),
-      ),
-    );
-  }
-
-  Widget _buildEmptyState(bool isPlanTrip) {
+  Widget _buildEmptyState() {
     return Center(
       child: Column(
         mainAxisAlignment: MainAxisAlignment.center,
         children: [
-          Icon(
-            isPlanTrip ? Icons.search_off_rounded : Icons.bus_alert_rounded,
-            size: 60,
-            color: Colors.grey[600],
-          ),
+          const Icon(Icons.directions_bus, color: Colors.white24, size: 48),
           const SizedBox(height: 16),
           Text(
-            isPlanTrip
-                ? "Enter a destination to find a bus."
-                : "No buses found nearby.",
-            textAlign: TextAlign.center,
-            style: GoogleFonts.urbanist(
-              fontSize: 18,
-              color: Colors.grey[400],
-            ),
+            "No nearby buses found.",
+            style: GoogleFonts.urbanist(color: Colors.white54, fontSize: 16),
+          ),
+          Text(
+            "Try again in a moment.",
+            style: GoogleFonts.urbanist(color: Colors.white38, fontSize: 14),
           ),
         ],
       ),
+    );
+  }
+
+  Widget _buildBusListItem(BuildContext context, Bus bus) {
+    final distanceKm = bus.distanceMeters != null ? (bus.distanceMeters! / 1000).toStringAsFixed(1) : '...';
+
+    return ListTile(
+      leading: const CircleAvatar(
+        backgroundColor: Color(0xFF2ED8C3),
+        child: Icon(Icons.directions_bus, color: Colors.black),
+      ),
+      title: Text(
+        'Bus ${bus.plateNumber}',
+        style: GoogleFonts.urbanist(
+          fontWeight: FontWeight.bold,
+          color: Colors.white,
+        ),
+      ),
+      subtitle: Text(
+        bus.routeName ?? 'Unknown Route',
+        style: GoogleFonts.urbanist(color: Colors.white70),
+      ),
+      trailing: Column(
+        mainAxisAlignment: MainAxisAlignment.center,
+        crossAxisAlignment: CrossAxisAlignment.end,
+        children: [
+          Text(
+            bus.eta?.toMinutesString() ?? '...',
+            style: GoogleFonts.urbanist(
+              color: const Color(0xFF2ED8C3),
+              fontWeight: FontWeight.bold,
+              fontSize: 16,
+            ),
+          ),
+          Text(
+            '$distanceKm km away',
+            style: GoogleFonts.urbanist(color: Colors.white54, fontSize: 12),
+          ),
+        ],
+      ),
+      onTap: () {
+        // This is where you could potentially show the detailed modal,
+        // but for now it just triggers the snackbar message.
+        onBusSelected(bus);
+      },
     );
   }
 }
