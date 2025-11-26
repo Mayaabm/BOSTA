@@ -35,14 +35,16 @@ class TripService {
 
   /// Notifies the backend that a trip has ended.
   static Future<void> endTrip(String token, String tripId) async {
-    final uri = Uri.parse(ApiEndpoints.endTrip(tripId));
+    // The endpoint for ending a trip might be something like /api/trips/{trip_id}/end/
+    // We'll assume ApiEndpoints.endTrip(tripId) correctly resolves to this.
+    final uri = Uri.parse(ApiEndpoints.endTrip(tripId)); 
     try {
       final response = await http.post( // Using POST to signify a state change
         uri,
         headers: {
           'Content-Type': 'application/json',
           'Authorization': 'Bearer $token',
-        },
+        }, // A body might be required by your backend, e.g., json.encode({'status': 'completed'})
       );
 
       if (response.statusCode != 200 && response.statusCode != 204) {
