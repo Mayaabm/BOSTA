@@ -342,8 +342,8 @@ class AuthService extends ChangeNotifier {
     try {
       final result = await doPost(accessToken);
       // If token invalid and refresh available, try refresh once
-      if (result != null && result.contains('token_not_valid') && effectiveRefresh != null) {
-        final refreshUri = Uri.parse('${ApiEndpoints.driverLogin}refresh/');
+      if (result != null && (result.contains('token_not_valid') || result.contains('Invalid token')) && effectiveRefresh != null) {
+        final refreshUri = Uri.parse(ApiEndpoints.tokenRefresh);
         final refreshRes = await http.post(
           refreshUri,
           headers: {'Content-Type': 'application/json'},
@@ -389,7 +389,7 @@ class AuthService extends ChangeNotifier {
   /// Attempts to get a new access token using a refresh token.
   /// Returns the new access token on success, or null on failure.
   Future<String?> refreshAccessToken(String refreshToken) async {
-    final refreshUri = Uri.parse('${ApiEndpoints.driverLogin}refresh/');
+    final refreshUri = Uri.parse(ApiEndpoints.tokenRefresh);
     debugPrint("[AuthService] Refreshing token at $refreshUri");
     try {
       final refreshRes = await http.post(
