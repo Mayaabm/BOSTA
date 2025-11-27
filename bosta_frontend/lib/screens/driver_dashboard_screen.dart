@@ -1,18 +1,18 @@
 import 'dart:async';
 import 'dart:convert';
-import 'dart:typed_data';
 
 import 'package:bosta_frontend/models/app_route.dart';
+import 'package:bosta_frontend/screens/rider_home_screen.dart';
 import 'package:bosta_frontend/services/auth_service.dart';
 import 'package:bosta_frontend/services/trip_service.dart';
-import 'package:flutter/services.dart' show rootBundle;
 import 'package:bosta_frontend/services/bus_service.dart';
 import 'package:flutter/material.dart';
 import 'package:geolocator/geolocator.dart' as geo;
+import 'package:flutter_map/flutter_map.dart';
 import 'package:google_fonts/google_fonts.dart';
 import 'package:http/http.dart' as http;
 import 'package:go_router/go_router.dart';
-import 'package:mapbox_maps_flutter/mapbox_maps_flutter.dart';
+import 'package:latlong2/latlong.dart' as fm;
 import 'package:provider/provider.dart';
 
 class DriverDashboardScreen extends StatefulWidget {
@@ -23,11 +23,7 @@ class DriverDashboardScreen extends StatefulWidget {
 }
 
 class _DriverDashboardScreenState extends State<DriverDashboardScreen> {
-  MapboxMap? _mapboxMap;
-  PointAnnotationManager? _pointAnnotationManager;
-  PointAnnotation? _driverAnnotation;
-  PolylineAnnotationManager? _polylineAnnotationManager;
-
+  final MapController _mapController = MapController();
   geo.Position? _currentPosition;
   StreamSubscription<geo.Position>? _positionStream;
   Timer? _updateTimer;
@@ -47,15 +43,6 @@ class _DriverDashboardScreenState extends State<DriverDashboardScreen> {
   String? _busId;
   String? _authToken;
   String? _activeTripId;
-
-  // IMPORTANT: For production, load this from a config file or via --dart-define.
-  static const String _mapboxAccessToken =
-      'pk.eyJ1IjoibWF5YWJlMzMzIiwiYSI6ImNtaWcxZmV6ZTAyOXozY3FzMHZqYzhrYzgifQ.qJnThdfDGW9MUkDNrvoEoA';
-
-  static const String ROUTE_SOURCE_ID = "route-source";
-  static const String ROUTE_LAYER_ID = "route-layer";
-  static const String DRIVER_ICON_ID = "driver-icon";
-  static const String DRIVER_MARKER_IMAGE_ID = "driver-marker-image";
 
   @override
   void initState() {
@@ -113,8 +100,8 @@ class _DriverDashboardScreenState extends State<DriverDashboardScreen> {
       _activeTripId = tripId;
     });
 
+    // Check for location permissions before proceeding.
     await _checkLocationPermission();
-    _startLocationListener();
   }
 
   Future<void> _checkLocationPermission() async {
@@ -135,6 +122,10 @@ class _DriverDashboardScreenState extends State<DriverDashboardScreen> {
         _errorMessage = "Location permissions are permanently denied. Please enable them in your device settings.";
         _isLoading = false;
       });
+    } else {
+      // Permissions are granted, proceed with location-dependent setup.
+      _startLocationListener();
+      await _getInitialLocationAndStartUpdates();
     }
   }
 
@@ -159,26 +150,6 @@ class _DriverDashboardScreenState extends State<DriverDashboardScreen> {
     );
   }
 
-  Future<void> _onMapCreated(MapboxMap mapboxMap) async {
-    _mapboxMap = mapboxMap;
-    
-    // Setup map images first
-    await _setupMapImages();
-    
-    // Initialize managers and then load assets and data.
-    final managers = await Future.wait([
-      _mapboxMap!.annotations.createPointAnnotationManager(),
-      _mapboxMap!.annotations.createPolylineAnnotationManager(),
-    ]);
-    
-    _pointAnnotationManager = managers[0] as PointAnnotationManager;
-    _polylineAnnotationManager = managers[1] as PolylineAnnotationManager;
-    await _drawRoute();
-    
-    // Once map is ready, get first location and start updates
-    await _getInitialLocationAndStartUpdates();
-  }
-
   Future<void> _getInitialLocationAndStartUpdates() async {
     try {
       final geo.Position position = await geo.Geolocator.getCurrentPosition(
@@ -190,19 +161,12 @@ class _DriverDashboardScreenState extends State<DriverDashboardScreen> {
         _isLoading = false;
       });
 
-      _mapboxMap?.flyTo(
-        CameraOptions(
-          center: Point(
-            coordinates: Position(position.longitude, position.latitude),
-          ).toJson(),
-          zoom: 15,
-        ),
-        MapAnimationOptions(duration: 1500),
+      _mapController.move(
+        fm.LatLng(position.latitude, position.longitude),
+        15.0,
       );
 
-      _updateDriverMarker(position);
       _fetchEtaAndUpdateBackend(); // Initial fetch
-
       // Start periodic updates
       _updateTimer = Timer.periodic(const Duration(seconds: 15), (timer) {
         if (!_isTripEnded) {
@@ -218,44 +182,11 @@ class _DriverDashboardScreenState extends State<DriverDashboardScreen> {
     }
   }
 
-  /// Draws the assigned route on the map.
-  Future<void> _drawRoute() async {
-    if (_assignedRoute == null || _polylineAnnotationManager == null) return;
-
-    final List<Position> routePositions = _assignedRoute!.geometry
-        .map((latlng) => Position(latlng.longitude, latlng.latitude))
-        .toList();
-
-    _polylineAnnotationManager?.create(
-      PolylineAnnotationOptions(
-        geometry: LineString(coordinates: routePositions).toJson(),
-        lineColor: Colors.teal.value,
-        lineWidth: 5.0,
-        lineOpacity: 0.8,
-      ),
-    );
-  }
-
   /// Updates the driver's marker on the map.
   Future<void> _updateDriverMarker(geo.Position position) async {
-    if (_pointAnnotationManager == null || !mounted) return;
-
-    final newPoint = Point(
-        coordinates: Position(position.longitude, position.latitude));
-
-    if (_driverAnnotation == null) {
-      // Create the annotation if it doesn't exist
-      final options = PointAnnotationOptions(
-        geometry: newPoint.toJson(),
-        iconImage: DRIVER_MARKER_IMAGE_ID,
-        iconSize: 1.5,
-      );
-      _driverAnnotation = await _pointAnnotationManager?.create(options);
-    } else {
-      // Otherwise, just update its geometry
-      _driverAnnotation!.geometry = newPoint.toJson();
-      _pointAnnotationManager?.update(_driverAnnotation!);
-    }
+    // With flutter_map, we just need to call setState to rebuild the MarkerLayer
+    // with the new _currentPosition. The listen callback in _startLocationListener
+    // already does this.
   }
 
   /// Fetches ETA from Mapbox and updates the backend with the current location.
@@ -288,8 +219,7 @@ class _DriverDashboardScreenState extends State<DriverDashboardScreen> {
     final destCoords = "${destination.longitude},${destination.latitude}";
 
 
-    final url =
-        'https://api.mapbox.com/directions/v5/mapbox/driving-traffic/$originCoords;$destCoords?access_token=$_mapboxAccessToken&overview=full&geometries=geojson';
+    final url = 'https://api.mapbox.com/directions/v5/mapbox/driving-traffic/$originCoords;$destCoords?access_token=${TripService.getMapboxAccessToken()}&overview=full&geometries=geojson';
 
     try {
       final response = await http.get(Uri.parse(url));
@@ -320,26 +250,6 @@ class _DriverDashboardScreenState extends State<DriverDashboardScreen> {
           _errorMessage = "Could not calculate ETA.";
         });
       }
-    }
-  }
-
-  /// Loads the bus icon from assets and adds it to the map's style.
-  Future<void> _setupMapImages() async {
-    try {
-      final ByteData byteData = await rootBundle.load('assets/bus-icon.png');
-      final Uint8List list = byteData.buffer.asUint8List();
-      await _mapboxMap?.style.addStyleImage(
-        DRIVER_MARKER_IMAGE_ID,
-        1.5,
-        MbxImage(width: 50, height: 50, data: list),
-        false,
-        [],
-        [],
-        null,
-      );
-    } catch (e) {
-      debugPrint("Error loading bus icon: $e");
-      // Non-fatal, marker will use default icon
     }
   }
 
@@ -402,16 +312,11 @@ class _DriverDashboardScreenState extends State<DriverDashboardScreen> {
           IconButton(
             icon: const Icon(Icons.my_location),
             onPressed: () {
-              if (_currentPosition != null && _mapboxMap != null) {
-                _mapboxMap!.flyTo(
-                  CameraOptions(
-                    center: Point(
-                      coordinates: Position(_currentPosition!.longitude,
-                          _currentPosition!.latitude),
-                    ).toJson(),
-                    zoom: 15,
-                  ),
-                  MapAnimationOptions(duration: 1000),
+              if (_currentPosition != null) {
+                _mapController.move(
+                  fm.LatLng(
+                      _currentPosition!.latitude, _currentPosition!.longitude),
+                  15.0,
                 );
               }
             },
@@ -424,19 +329,39 @@ class _DriverDashboardScreenState extends State<DriverDashboardScreen> {
       ),
       body: Stack(
         children: [
-          MapWidget(
-            resourceOptions: ResourceOptions(accessToken: _mapboxAccessToken),
-            key: const ValueKey("mapboxMap"),
-            styleUri: MapboxStyles.DARK,
-            onMapCreated: _onMapCreated,
-            cameraOptions: CameraOptions(
-              // Fallback center
-              center: Point(
-                      coordinates: Position(35.5018, 33.8938))
-                  .toJson(),
-              zoom: 12.0,
+          FlutterMap(
+            mapController: _mapController,
+            options: MapOptions(
+              initialCenter: const fm.LatLng(33.8938, 35.5018), // Fallback to Beirut
+              initialZoom: 12.0,
+              onMapReady: () {
+                if (_currentPosition != null) {
+                  _mapController.move(
+                      fm.LatLng(_currentPosition!.latitude,
+                          _currentPosition!.longitude),
+                      15.0);
+                }
+              },
             ),
-          ),
+            children: [
+              TileLayer(
+                urlTemplate: 'https://{s}.basemaps.cartocdn.com/dark_all/{z}/{x}/{y}{r}.png',
+                subdomains: const ['a', 'b', 'c', 'd'],
+                userAgentPackageName: 'com.bosta.app',
+              ),
+              if (_assignedRoute != null)
+                PolylineLayer(polylines: [
+                  Polyline(
+                    points: _assignedRoute!.geometry,
+                    color: const Color(0xFF2ED8C3),
+                    strokeWidth: 5,
+                  ),
+                ]),
+              if (_currentPosition != null)
+                MarkerLayer(markers: [
+                  _buildDriverMarker(),
+                ]),
+            ]),
           if (_isLoading)
             Container(
               color: Colors.black.withOpacity(0.5),
@@ -460,6 +385,21 @@ class _DriverDashboardScreenState extends State<DriverDashboardScreen> {
             ),
           _buildTripInfoCard(),
         ],
+      ),
+    );
+  }
+
+  Marker _buildDriverMarker() {
+    return Marker(
+      point: fm.LatLng(_currentPosition!.latitude, _currentPosition!.longitude),
+      width: 60,
+      height: 60,
+      child: const _BusMarker(
+        // Using the same marker style as the rider screen for consistency
+        pulseController: null, // No pulse needed for the driver's own marker
+        isSelected: true,
+        busColor: Colors.white,
+        iconColor: Color(0xFF12161A),
       ),
     );
   }
@@ -538,6 +478,65 @@ class _DriverDashboardScreenState extends State<DriverDashboardScreen> {
             color: Colors.white,
             fontSize: 16,
             fontWeight: FontWeight.w600,
+          ),
+        ),
+      ],
+    );
+  }
+}
+
+// Re-using the bus marker from rider_home_screen for consistency.
+// A better approach would be to extract this to its own file.
+class _BusMarker extends StatelessWidget {
+  final AnimationController? pulseController;
+  final bool isSelected;
+  final Color busColor;
+  final Color iconColor;
+
+  const _BusMarker({
+    this.pulseController,
+    this.isSelected = false,
+    required this.busColor,
+    this.iconColor = Colors.white,
+  });
+
+  @override
+  Widget build(BuildContext context) {
+    final controller = pulseController;
+    return Stack(
+      alignment: Alignment.center,
+      children: [
+        // Pulsing animation, shown only when selected and controller is available
+        if (isSelected && controller != null)
+          FadeTransition(
+            opacity:
+                Tween<double>(begin: 0.7, end: 0.2).animate(controller),
+            child: ScaleTransition(
+              scale:
+                  Tween<double>(begin: 1.0, end: 2.5).animate(controller),
+              child: Container(
+                decoration: BoxDecoration(
+                  shape: BoxShape.circle,
+                  color: busColor.withOpacity(0.5),
+                ),
+              ),
+            ),
+          ),
+        // Main bus icon container
+        Container(
+          padding: const EdgeInsets.all(4),
+          decoration: BoxDecoration(
+            shape: BoxShape.circle,
+            color: isSelected ? busColor : const Color(0xFF12161A),
+            border: Border.all(
+              color: isSelected ? const Color(0xFF12161A) : busColor,
+              width: isSelected ? 3 : 2,
+            ),
+          ),
+          child: Icon(
+            Icons.directions_bus,
+            color: isSelected ? iconColor : busColor,
+            size: 16,
           ),
         ),
       ],

@@ -8,7 +8,7 @@ class ApiEndpoints {
   ApiEndpoints._();
 
   // Use 'localhost' for web and '10.0.2.2' for Android emulator
-  static final String _host = kIsWeb ? 'localhost' : '192.168.1.101';
+  static const String _host = kIsWeb ? 'localhost' : '192.168.1.101';
   static final String _baseUrl = 'http://$_host:8000/api';
 
   // --- Bus Endpoints ---

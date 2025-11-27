@@ -1,6 +1,7 @@
 from django.contrib.gis.geos import Point
 from django.utils import timezone
 from rest_framework.decorators import api_view, permission_classes
+from rest_framework import generics, status
 from rest_framework.response import Response
 from .models import VehiclePosition, Trip, Route, Bus, CustomUserProfile, Stop
 from datetime import timedelta
@@ -10,7 +11,7 @@ from django.contrib.gis.measure import D
 from django.contrib.gis.db.models.functions import Distance
 from django.db.models import OuterRef, Subquery
 from django.db.models.functions import Coalesce, Cast
-from .serializers import BusNearbySerializer, RouteSerializer
+from .serializers import BusNearbySerializer, RouteSerializer, TripSerializer
 from django.contrib.auth import authenticate
 from rest_framework.permissions import IsAuthenticated
 from rest_framework_simplejwt.tokens import RefreshToken
@@ -387,12 +388,16 @@ def get_driver_profile(request):
         bus = Bus.objects.filter(driver=driver_profile).first()
         latest_trip = Trip.objects.filter(bus=bus).order_by('-departure_time').first() if bus else None
         route = latest_trip.route if (latest_trip and latest_trip.route) else None
+        active_trip_id = latest_trip.id if latest_trip and latest_trip.status in [Trip.STATUS_PENDING, Trip.STATUS_STARTED] else None
+
         route_serializer = RouteSerializer(route) if route else None
 
         return Response({
             "driver_name": user.get_full_name() or user.username,
             "bus": BusNearbySerializer(bus).data if bus else None,
             "route": route_serializer.data if route_serializer else None,
+            # This tells the frontend if there's a trip ready to be started or resumed.
+            "active_trip_id": active_trip_id,
         })
     except CustomUserProfile.DoesNotExist:
         return Response({"error": "Driver profile not found for this user."}, status=404)
@@ -469,6 +474,69 @@ def driver_onboard(request):
         except Exception:
             logger.exception("driver_onboard: failed to create trip for bus %s and route %s", bus_plate, route_id)
             return Response({"error": "failed", "message": "Could not create trip for bus."}, status=500)
+
+    # If a trip was created, start the simulation automatically
+    if trip_obj:
+        # This logic is borrowed from the start_trip view to ensure consistency.
+        # In a larger application, this could be refactored into a shared utility function.
+        def _simulate_onboard_trip(trip_pk, speed=10.0, interval=2.0):
+            try:
+                # Re-fetch objects inside the thread
+                t = Trip.objects.select_related('route', 'bus').get(pk=trip_pk)
+                route = t.route
+                bus = t.bus
+                if not route or not bus:
+                    logger.error(f"Cannot simulate trip {trip_pk}: missing route or bus.")
+                    return
+
+                # Mark trip as started
+                t.status = Trip.STATUS_STARTED
+                t.started_at = dj_timezone.now()
+                t.save(update_fields=['status', 'started_at'])
+
+                coords = list(route.geometry.coords)
+                points = [Point(c[0], c[1], srid=4326) for c in coords]
+                start_index = 0 # Default to start of the route
+
+                # Simple step-through simulation
+                for i in range(start_index, len(points)):
+                    point = points[i]
+                    lon, lat = point.x, point.y
+                    
+                    heading = None
+                    if i < len(points) - 1:
+                        nlon, nlat = points[i + 1].x, points[i + 1].y
+                        dy = nlat - lat
+                        dx = nlon - lon
+                        heading = math.degrees(math.atan2(dy, dx))
+
+                    # Create VehiclePosition record
+                    vp = VehiclePosition.objects.create(
+                        bus=bus,
+                        location=Point(lon, lat, srid=4326),
+                        heading_deg=heading,
+                        speed_mps=speed,
+                    )
+                    # Update the master Bus location
+                    bus.current_location = vp.location
+                    bus.last_reported_at = dj_timezone.now()
+                    bus.save(update_fields=['current_location', 'last_reported_at'])
+
+                    time.sleep(interval)
+
+                # Mark trip as finished
+                t.status = Trip.STATUS_FINISHED
+                t.finished_at = dj_timezone.now()
+                t.save(update_fields=['status', 'finished_at'])
+                logger.info(f"Auto-simulation for trip {t.id} finished.")
+
+            except Exception:
+                logger.exception(f'onboard_simulate: unexpected error in background simulator for trip {trip_pk}')
+
+        # Spawn the simulation in a background thread so the API returns immediately
+        logger.info(f"Spawning auto-simulation for newly created trip {trip_obj.id}")
+        simulation_thread = threading.Thread(target=_simulate_onboard_trip, args=(trip_obj.id,), daemon=True)
+        simulation_thread.start()
 
     # Return collected onboarding result
     data = {
@@ -726,3 +794,23 @@ def start_trip(request, trip_id):
     thr.start()
 
     return Response({"status": "simulation_started", "trip_id": str(trip.id)})
+
+
+class EndTripView(generics.UpdateAPIView):
+    """
+    A view to end a trip.
+    """
+    queryset = Trip.objects.all()
+    serializer_class = TripSerializer
+    permission_classes = [IsAuthenticated]
+    lookup_field = 'id'
+
+    def update(self, request, *args, **kwargs):
+        trip_id = self.kwargs.get('trip_id')
+        try:
+            trip = Trip.objects.get(id=trip_id)
+            trip.status = Trip.STATUS_FINISHED
+            trip.save(update_fields=['status'])
+            return Response({'status': 'trip ended'}, status=status.HTTP_200_OK)
+        except Trip.DoesNotExist:
+            return Response({'error': 'Trip not found'}, status=status.HTTP_404_NOT_FOUND)

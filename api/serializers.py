@@ -1,6 +1,6 @@
 # api/serializers.py
 from rest_framework import serializers
-from api.models import Stop, Bus, Route
+from api.models import Stop, Bus, Route, Trip
 
 class PointAsGeoJSONField(serializers.Field):
     def to_representation(self, value):
@@ -47,3 +47,16 @@ class RouteSerializer(serializers.ModelSerializer):
     class Meta:
         model = Route
         fields = ["id", "name", "description", "geometry", "stops"]
+
+class TripSerializer(serializers.ModelSerializer):
+    class Meta:
+        model = Trip
+        fields = [
+            'id', 
+            'bus', 
+            'route', 
+            'departure_time', 
+            'status', 
+            'started_at', 
+            'finished_at'
+        ]

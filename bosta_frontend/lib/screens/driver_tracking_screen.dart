@@ -98,7 +98,7 @@ class _DriverTrackingScreenState extends State<DriverTrackingScreen> {
           ? Center(child: Text(_error!, style: const TextStyle(color: Colors.red)))
           : FlutterMap(
               mapController: _mapController,
-              options: MapOptions(initialCenter: _busLocation ?? fm.LatLng(33.89365, 35.55166), initialZoom: 13.0),
+              options: MapOptions(initialCenter: _busLocation ?? const fm.LatLng(33.89365, 35.55166), initialZoom: 13.0),
               children: [
                 TileLayer(urlTemplate: 'https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', subdomains: const ['a', 'b', 'c']),
                 if (_busLocation != null)

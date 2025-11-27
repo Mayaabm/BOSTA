@@ -1,10 +1,13 @@
 import 'dart:async';
 import 'package:flutter/cupertino.dart';
 import 'package:flutter/material.dart';
+import 'package:flutter_typeahead/flutter_typeahead.dart';
 import 'package:flutter_map/flutter_map.dart';
 import 'package:flutter/foundation.dart'; // Import for kDebugMode
+import 'package:bosta_frontend/models/place.dart';
 import 'package:bosta_frontend/models/user_location.dart';
 import 'package:geolocator/geolocator.dart';
+import 'package:bosta_frontend/services/geocoding_service.dart';
 import 'package:google_fonts/google_fonts.dart';
 import 'package:latlong2/latlong.dart';
 import 'package:sliding_up_panel/sliding_up_panel.dart';
@@ -12,10 +15,9 @@ import 'package:sliding_up_panel/sliding_up_panel.dart';
 import '../models/bus.dart'; // Using the actual model
 import '../models/app_route.dart'; // Using the unified route model
 import '../services/bus_service.dart'; // Using the actual service
-import '../services/route_service.dart'; // Using the actual service
+// Using the actual service
 import 'bus_bottom_sheet.dart';
 import 'bus_details_modal.dart';
-import 'dual_search_bar.dart';
 
 enum RiderView { planTrip, nearbyBuses }
 
@@ -48,6 +50,9 @@ class _RiderHomeScreenState extends State<RiderHomeScreen> with TickerProviderSt
   // Animation for bus markers
   late final AnimationController _pulseController; // For bus marker pulse animation
   late final AnimationController _markerAnimationController;
+
+  // Search controllers
+  final TextEditingController _destinationController = TextEditingController();
   Animation<LatLng>? _markerAnimation;
 
   @override
@@ -71,6 +76,7 @@ class _RiderHomeScreenState extends State<RiderHomeScreen> with TickerProviderSt
     _selectedBusDetailsTimer?.cancel();
     _markerAnimationController.dispose();
     _pulseController.dispose();
+    _destinationController.dispose();
     super.dispose();
   }
 
@@ -486,11 +492,58 @@ class _RiderHomeScreenState extends State<RiderHomeScreen> with TickerProviderSt
       child: Padding(
         padding: const EdgeInsets.symmetric(horizontal: 16.0, vertical: 8.0),
         child: Column(
+          mainAxisSize: MainAxisSize.min,
           children: [
-            DualSearchBar(
-              onDestinationSubmitted: (destination) {
-                // This would trigger a search for routes to the destination
-                debugPrint("Destination submitted: $destination");
+            // We replace DualSearchBar with a TypeAheadField for interactive search.
+            TypeAheadField<Place>(
+              controller: _destinationController,
+              suggestionsCallback: (pattern) async {
+                // Call our new geocoding service
+                return await GeocodingService.searchPlaces(
+                  pattern,
+                  proximity: _currentPosition != null
+                      ? LatLng(_currentPosition!.latitude, _currentPosition!.longitude)
+                      : null,
+                );
+              },
+              itemBuilder: (context, suggestion) {
+                return ListTile(
+                  leading: const Icon(Icons.location_on_outlined),
+                  title: Text(suggestion.name),
+                  subtitle: Text(suggestion.address, maxLines: 1, overflow: TextOverflow.ellipsis),
+                );
+              },
+              onSelected: (suggestion) {
+                _destinationController.text = suggestion.name;
+                // Here you would trigger the logic to find buses to the destination
+                debugPrint("Destination selected: ${suggestion.name} at ${suggestion.coordinates}");
+                // Example: _findBusesTo(suggestion.coordinates);
+              },
+              decorationBuilder: (context, child) {
+                return Material(
+                  type: MaterialType.card,
+                  elevation: 4.0,
+                  borderRadius: BorderRadius.circular(30.0),
+                  child: child,
+                );
+              },
+              builder: (context, controller, focusNode) {
+                return TextField(
+                  controller: controller,
+                  focusNode: focusNode,
+                  autofocus: false,
+                  decoration: InputDecoration(
+                    prefixIcon: const Icon(Icons.search, color: Color(0xFF2ED8C3)),
+                    hintText: 'Where to?',
+                    filled: true,
+                    fillColor: const Color(0xFF1F2327),
+                    contentPadding: const EdgeInsets.symmetric(horizontal: 20, vertical: 15),
+                    border: OutlineInputBorder(
+                      borderRadius: BorderRadius.circular(30.0),
+                      borderSide: BorderSide.none,
+                    ),
+                  ),
+                );
               },
             ),
             const SizedBox(height: 16), // Spacing between search bar and segmented control

@@ -197,7 +197,7 @@ class _DriverOnboardingScreenState extends State<DriverOnboardingScreen> {
   // Helper for point-to-line-segment distance calculation.
   double _pointToSegmentDistance(fm.LatLng p, fm.LatLng a, fm.LatLng b) {
     final double l2 = const fm.Distance().distance(a, b);
-    if (l2 == 0.0) return fm.Distance().as(fm.LengthUnit.Meter, p, a);
+    if (l2 == 0.0) return const fm.Distance().as(fm.LengthUnit.Meter, p, a);
 
     // Project p onto the line defined by a, b
     final double t = ((p.latitude - a.latitude) * (b.latitude - a.latitude) + (p.longitude - a.longitude) * (b.longitude - a.longitude)) / l2;
@@ -210,7 +210,7 @@ class _DriverOnboardingScreenState extends State<DriverOnboardingScreen> {
     );
 
     // Return the distance from p to that closest point
-    return fm.Distance().as(fm.LengthUnit.Meter, p, closestPoint);
+    return const fm.Distance().as(fm.LengthUnit.Meter, p, closestPoint);
   }
 
   void _onMapTap(fm.LatLng latlng) {
@@ -390,9 +390,8 @@ class _DriverOnboardingScreenState extends State<DriverOnboardingScreen> {
                   ElevatedButton(
                     onPressed: () {
                       debugPrint("--- 'Done' button pressed on Onboarding screen ---");
-                      // After setup is complete, navigate directly to the dashboard
-                      // to start the trip with the new settings.
-                      GoRouter.of(context).go('/driver/dashboard');
+                      // After setup is complete, navigate back to the home screen.
+                      GoRouter.of(context).go('/driver/home');
                     },
                     style: ElevatedButton.styleFrom(
                       backgroundColor: const Color(0xFF2ED8C3),
@@ -460,7 +459,7 @@ class _DriverOnboardingScreenState extends State<DriverOnboardingScreen> {
               // safe fallback center when forcing the map for debugging
               initialCenter: (_selectedRoute != null && _selectedRoute!.geometry.isNotEmpty)
                   ? _selectedRoute!.geometry.first
-                  : fm.LatLng(33.89365, 35.55166),
+                  : const fm.LatLng(33.89365, 35.55166),
               onMapReady: _centerMapOnRoute,
               initialZoom: 13.0,
               onTap: (tapPos, latlng) => _onMapTap(latlng),
@@ -593,9 +592,9 @@ class _DriverOnboardingScreenState extends State<DriverOnboardingScreen> {
               textAlign: TextAlign.center,
             ),
             const SizedBox(height: 12),
-            Text(
+            const Text(
               'If you see "Please complete all fields..." but do not see route, start location or start time fields, tap Refresh to try loading available routes. If the problem persists, contact support.',
-              style: const TextStyle(color: Colors.white70),
+              style: TextStyle(color: Colors.white70),
               textAlign: TextAlign.center,
             ),
             const SizedBox(height: 12),
