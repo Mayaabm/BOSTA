@@ -41,8 +41,10 @@ class _DriverDashboardScreenState extends State<DriverDashboardScreen> {
   // Store route and bus info from AuthService
   AppRoute? _assignedRoute;
   String? _busId;
+  RouteStop? _destinationStop;
   String? _authToken;
   String? _activeTripId;
+  List<fm.LatLng> _tripRouteGeometry = []; // To store the specific part of the route for this trip
 
   @override
   void initState() {
@@ -87,17 +89,23 @@ class _DriverDashboardScreenState extends State<DriverDashboardScreen> {
       _assignedRoute = authState.assignedRoute;
       _busId = authState.driverInfo!.busId;
       _authToken = authState.token;
-      if (_assignedRoute!.stops.isNotEmpty) {
-        final lastStop = _assignedRoute!.stops.last;
-        // The RouteStop model has 'order' and 'location', but not 'name'.
-        // We will construct a descriptive name from the available data.
-        if (lastStop.order != null) {
-          _destinationName = 'Stop ${lastStop.order}';
-        } else {
+      if (_assignedRoute != null && authState.selectedEndStopId != null) {
+        try {
+          _destinationStop = _assignedRoute!.stops.firstWhere((stop) => stop.id == authState.selectedEndStopId);
+          _destinationName = 'Stop ${_destinationStop!.order}';
+        } catch (e) {
+          // Fallback if the selected end stop ID is not found in the route's stops
+          _destinationStop = _assignedRoute!.stops.last;
           _destinationName = 'Final Destination';
         }
+      } else if (_assignedRoute != null && _assignedRoute!.stops.isNotEmpty) {
+        _destinationStop = _assignedRoute!.stops.last;
+        _destinationName = 'Final Destination';
       }
       _activeTripId = tripId;
+
+      // Calculate the specific route segment for this trip
+      _calculateTripGeometry();
     });
 
     // Check for location permissions before proceeding.
@@ -127,6 +135,64 @@ class _DriverDashboardScreenState extends State<DriverDashboardScreen> {
       _startLocationListener();
       await _getInitialLocationAndStartUpdates();
     }
+  }
+
+  /// Calculates the portion of the route from the start point to the destination.
+  void _calculateTripGeometry() {
+    if (_assignedRoute == null || _assignedRoute!.geometry.isEmpty || _destinationStop == null) {
+      return;
+    }
+
+    final authState = Provider.of<AuthService>(context, listen: false).currentState;
+    final fullGeometry = _assignedRoute!.geometry;
+
+    // Determine the start and end coordinates for the trip segment.
+    final startPoint = authState.initialBusPosition;
+    final endPoint = fm.LatLng(_destinationStop!.location.latitude, _destinationStop!.location.longitude);
+
+    if (startPoint == null) {
+      // If for some reason we don't have a start point, show the whole route.
+      setState(() => _tripRouteGeometry = fullGeometry);
+      return;
+    }
+
+    // Find the index of the point in the full geometry that is closest to our start and end points.
+    int startIndex = _findClosestPointIndex(startPoint, fullGeometry);
+    int endIndex = _findClosestPointIndex(endPoint, fullGeometry);
+
+    if (startIndex == -1 || endIndex == -1 || startIndex >= endIndex) {
+      // If points are not found or are in the wrong order, fallback to the full route.
+      setState(() => _tripRouteGeometry = fullGeometry);
+      return;
+    }
+
+    // Create the sub-list for the trip.
+    // We also add the precise start and end points to make the line exact.
+    final tripGeometry = [
+      startPoint,
+      ...fullGeometry.sublist(startIndex, endIndex + 1),
+      endPoint,
+    ];
+
+    setState(() => _tripRouteGeometry = tripGeometry);
+  }
+
+  /// Finds the index of the closest point in a polyline to a given point.
+  int _findClosestPointIndex(fm.LatLng point, List<fm.LatLng> polyline) {
+    if (polyline.isEmpty) return -1;
+
+    double minDistance = double.infinity;
+    int closestIndex = -1;
+    const distance = fm.Distance();
+
+    for (int i = 0; i < polyline.length; i++) {
+      final d = distance(point, polyline[i]);
+      if (d < minDistance) {
+        minDistance = d;
+        closestIndex = i;
+      }
+    }
+    return closestIndex;
   }
 
   /// Listens to continuous location updates from the device.
@@ -192,43 +258,61 @@ class _DriverDashboardScreenState extends State<DriverDashboardScreen> {
   /// Fetches ETA from Mapbox and updates the backend with the current location.
   Future<void> _fetchEtaAndUpdateBackend() async {
     if (_isTripEnded || _currentPosition == null ||
-        _assignedRoute == null ||
-        _assignedRoute!.stops.isEmpty ||
+        _destinationStop == null ||
         _busId == null ||
         _authToken == null) {
       return;
     }
 
     // 1. Update our backend with the current location
+    final authService = Provider.of<AuthService>(context, listen: false);
+    
+    debugPrint("\n=== ETA FETCH DEBUG ===");
+    debugPrint("[ETA] Bus ID: $_busId");
+    debugPrint("[ETA] Current position: LAT=${_currentPosition!.latitude.toStringAsFixed(6)}, LON=${_currentPosition!.longitude.toStringAsFixed(6)}");
+    debugPrint("[ETA] Destination stop ID: ${_destinationStop!.id}");
+    debugPrint("[ETA] Destination: LAT=${_destinationStop!.location.latitude.toStringAsFixed(6)}, LON=${_destinationStop!.location.longitude.toStringAsFixed(6)}");
+    
     try {
       await BusService.updateLocation(
         busId: _busId!,
         latitude: _currentPosition!.latitude,
         longitude: _currentPosition!.longitude,
         token: _authToken!,
+        authService: authService,
       );
+      debugPrint("[ETA] Backend location updated successfully");
     } catch (e) {
       debugPrint("Failed to update backend location: $e");
       // Non-fatal, we can still try to get ETA.
     }
 
     // 2. Fetch ETA from Mapbox Directions API
-    final destination = _assignedRoute!.stops.last.location;
+    final destination = _destinationStop!.location;
     final originCoords =
         "${_currentPosition!.longitude},${_currentPosition!.latitude}";
     final destCoords = "${destination.longitude},${destination.latitude}";
 
+    debugPrint("[ETA] Mapbox Origin coords: $originCoords");
+    debugPrint("[ETA] Mapbox Destination coords: $destCoords");
 
-    final url = 'https://api.mapbox.com/directions/v5/mapbox/driving-traffic/$originCoords;$destCoords?access_token=${TripService.getMapboxAccessToken()}&overview=full&geometries=geojson';
+    final url =
+        'https://api.mapbox.com/directions/v5/mapbox/driving-traffic/$originCoords;$destCoords?access_token=${TripService.getMapboxAccessToken()}&overview=full&geometries=geojson';
 
     try {
       final response = await http.get(Uri.parse(url));
+
       if (response.statusCode == 200) {
         final data = json.decode(response.body);
+        debugPrint("[ETA] Mapbox response status: ${response.statusCode}");
         if (data['routes'] != null && data['routes'].isNotEmpty) {
           final route = data['routes'][0];
           final double durationSeconds = route['duration']?.toDouble() ?? 0.0;
           final double distanceMeters = route['distance']?.toDouble() ?? 0.0;
+
+          debugPrint("[ETA] Mapbox distance: ${(distanceMeters/1000).toStringAsFixed(2)} km");
+          debugPrint("[ETA] Mapbox duration: ${(durationSeconds/60).toStringAsFixed(1)} min");
+          debugPrint("=== ETA FETCH DEBUG (SUCCESS) ===\n");
 
           if (mounted) {
             setState(() {
@@ -349,10 +433,10 @@ class _DriverDashboardScreenState extends State<DriverDashboardScreen> {
                 subdomains: const ['a', 'b', 'c', 'd'],
                 userAgentPackageName: 'com.bosta.app',
               ),
-              if (_assignedRoute != null)
+              if (_tripRouteGeometry.isNotEmpty)
                 PolylineLayer(polylines: [
                   Polyline(
-                    points: _assignedRoute!.geometry,
+                    points: _tripRouteGeometry,
                     color: const Color(0xFF2ED8C3),
                     strokeWidth: 5,
                   ),

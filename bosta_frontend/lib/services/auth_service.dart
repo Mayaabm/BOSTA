@@ -36,6 +36,7 @@ class AuthState {
   final String? token; // To store the auth token
   final String? refreshToken;
   final String? selectedStopId;
+  final String? selectedEndStopId;
   final String? selectedStartTime; // Storing as ISO string for simplicity
   final double? selectedStartLat;
   final double? selectedStartLon;
@@ -49,6 +50,7 @@ class AuthState {
     this.token,
     this.refreshToken,
     this.selectedStopId,
+    this.selectedEndStopId,
     this.selectedStartTime,
     this.selectedStartLat,
     this.selectedStartLon,
@@ -61,6 +63,7 @@ class AuthState {
 class AuthService extends ChangeNotifier {
   AuthState _state = AuthState(); // Default to logged-out
   String? _lastCreatedTripId;
+  Map<String, dynamic>? _rawDriverProfile;
 
   AuthState get currentState => _state;
 
@@ -127,7 +130,7 @@ class AuthService extends ChangeNotifier {
 
   /// Fetches the driver's profile from /api/driver/me/ and updates the state.
   /// Returns null on success, or an error message on failure.
-  Future<String?> fetchAndSetDriverProfile({String? token, String? refreshToken, String? selectedStopId, String? selectedStartTime, double? selectedStartLat, double? selectedStartLon}) async {
+  Future<String?> fetchAndSetDriverProfile({String? token, String? refreshToken, String? selectedStopId, String? selectedEndStopId, String? selectedStartTime, double? selectedStartLat, double? selectedStartLon}) async {
     final stopwatch = Stopwatch()..start();
     debugPrint("[AuthService] fetchAndSetDriverProfile: Starting...");
 
@@ -212,6 +215,12 @@ class AuthService extends ChangeNotifier {
         debugPrint("  > selectedStartLat: ${selectedStartLat ?? _state.selectedStartLat}");
         debugPrint("  > selectedStartLon: ${selectedStartLon ?? _state.selectedStartLon}");
 
+        // Store the raw response JSON so callers can access top-level fields
+        // that aren't yet represented in AuthState (e.g. active_trip_id).
+        _rawDriverProfile = data is Map<String, dynamic> ? data : null;
+        debugPrint("[AuthService] Stored raw driver profile: $_rawDriverProfile");
+        debugPrint("[AuthService] Raw profile keys: ${_rawDriverProfile?.keys.toList()}");
+
         _state = AuthState(
           isAuthenticated: true,
           role: UserRole.driver,
@@ -220,6 +229,7 @@ class AuthService extends ChangeNotifier {
           token: authToken,
           refreshToken: refresh,
           selectedStopId: selectedStopId ?? _state.selectedStopId, // Use newly provided trip info, or preserve existing
+          selectedEndStopId: selectedEndStopId ?? _state.selectedEndStopId,
           selectedStartTime: selectedStartTime ?? _state.selectedStartTime, // Use newly provided trip info, or preserve existing
           selectedStartLat: selectedStartLat ?? _state.selectedStartLat,
           selectedStartLon: selectedStartLon ?? _state.selectedStartLon,
@@ -291,6 +301,7 @@ class AuthService extends ChangeNotifier {
     required int busCapacity,
     required String routeId,
     String? startStopId,
+    String? endStopId,
     String? startTime,
     double? startLat,
     double? startLon,
@@ -301,6 +312,7 @@ class AuthService extends ChangeNotifier {
     debugPrint("[AuthService] setupDriverProfile called with:");
     debugPrint("  > routeId: $routeId");
     debugPrint("  > startStopId: $startStopId");
+    debugPrint("  > endStopId: $endStopId");
     debugPrint("  > startLat: $startLat, startLon: $startLon");
 
     final effectiveRefresh = refreshToken ?? _state.refreshToken; // optional refresh passed in
@@ -325,17 +337,28 @@ class AuthService extends ChangeNotifier {
           'route_id': routeId,
         }),
       );
+      
+      debugPrint("[AuthService.doPost] Response status: ${response.statusCode}");
+      debugPrint("[AuthService.doPost] Response body: ${response.body}");
+      
       if (response.statusCode == 200) {
         final data = json.decode(response.body);
+        debugPrint("[AuthService.doPost] Parsed response: $data");
+        debugPrint("[AuthService.doPost] Response keys: ${data.keys.toList()}");
+        
         _lastCreatedTripId = data['trip_id']?.toString(); // Capture the trip ID
+        debugPrint("[AuthService.doPost] Captured trip_id: $_lastCreatedTripId");
 
         // IMPORTANT: Now that the backend profile is set up, immediately fetch it
         // to get the complete, authoritative state, including the new routeId.
         // This fetch will also update the selected stop and time.
-        final fetchError = await fetchAndSetDriverProfile(token: token, selectedStopId: startStopId, selectedStartTime: startTime, selectedStartLat: startLat, selectedStartLon: startLon);
+        debugPrint("[AuthService.doPost] Calling fetchAndSetDriverProfile...");
+        final fetchError = await fetchAndSetDriverProfile(token: token, selectedStopId: startStopId, selectedEndStopId: endStopId, selectedStartTime: startTime, selectedStartLat: startLat, selectedStartLon: startLon);
+        debugPrint("[AuthService.doPost] fetchAndSetDriverProfile returned: $fetchError");
         return fetchError; // Return null on success, or the error message from fetching.
       }
       // Propagate response body for caller to inspect
+      debugPrint("[AuthService.doPost] Error response status: ${response.statusCode}");
       return response.body;
     }
 
@@ -361,6 +384,7 @@ class AuthService extends ChangeNotifier {
                 token: newAccess,
                 refreshToken: effectiveRefresh,
                 selectedStopId: startStopId,
+                selectedEndStopId: endStopId,
                 selectedStartTime: startTime,
                 selectedStartLat: startLat,
                 selectedStartLon: startLon);
@@ -411,6 +435,7 @@ class AuthService extends ChangeNotifier {
             token: newAccessToken,
             refreshToken: _state.refreshToken, // The refresh token itself doesn't change
             selectedStopId: _state.selectedStopId,
+            selectedEndStopId: _state.selectedEndStopId,
             selectedStartTime: _state.selectedStartTime,
             selectedStartLat: _state.selectedStartLat,
             selectedStartLon: _state.selectedStartLon,
@@ -452,6 +477,7 @@ class AuthService extends ChangeNotifier {
         token: _state.token,
         refreshToken: _state.refreshToken,
         selectedStopId: _state.selectedStopId,
+        selectedEndStopId: _state.selectedEndStopId,
         selectedStartTime: _state.selectedStartTime,
         selectedStartLat: _state.selectedStartLat,
         selectedStartLon: _state.selectedStartLon,
@@ -464,8 +490,13 @@ class AuthService extends ChangeNotifier {
   /// If onboarding created a Trip, this returns its id (useful for testing start)
   String? get lastCreatedTripId => _lastCreatedTripId;
 
+  /// Returns the raw driver profile JSON returned by the backend (nullable).
+  /// This lets UI code access top-level fields such as `active_trip_id`.
+  Map<String, dynamic>? get rawDriverProfile => _rawDriverProfile;
+
   Future<void> logout() async {
     _state = AuthState();
+    _rawDriverProfile = null;
     notifyListeners();
   }
 }

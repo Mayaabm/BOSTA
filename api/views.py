@@ -3,6 +3,7 @@ from django.utils import timezone
 from rest_framework.decorators import api_view, permission_classes
 from rest_framework import generics, status
 from rest_framework.response import Response
+from rest_framework.views import APIView
 from .models import VehiclePosition, Trip, Route, Bus, CustomUserProfile, Stop
 from datetime import timedelta
 import datetime
@@ -14,15 +15,13 @@ from django.db.models.functions import Coalesce, Cast
 from .serializers import BusNearbySerializer, RouteSerializer, TripSerializer
 from django.contrib.auth import authenticate
 from rest_framework.permissions import IsAuthenticated
-from rest_framework_simplejwt.tokens import RefreshToken
 import logging
 from django.conf import settings
 import threading
 import time
 import math
-from django.contrib.gis.geos import Point
 from django.utils import timezone as dj_timezone
-
+ 
 logger = logging.getLogger(__name__)
 
 
@@ -45,44 +44,62 @@ def compute_eta(bus_pos, target_point, avg_speed_m_per_s=10.0):
     # This is useful for sorting or simple displays.
     eta_minutes = max(0.1, eta_seconds / 60)
     return round(eta_minutes, 1)
-    
-    
+
+
 @api_view(['GET'])
 def eta(request):
     """
-    Estimate time (in minutes) for a bus to reach a target location.
-    Query params: bus_id, target_lat, target_lon
+    Compute ETA from driver's current position to rider's location.
+    Query params: bus_id (required), target_lat (rider lat), target_lon (rider lon)
+    Returns ETA in minutes and structured format (hours/minutes/seconds).
     """
     bus_id = request.query_params.get('bus_id')
     target_lat = request.query_params.get('target_lat')
     target_lon = request.query_params.get('target_lon')
 
+    logger.info(f"[ETA] Request: bus_id={bus_id}, target_lat={target_lat}, target_lon={target_lon}")
+
     if not (bus_id and target_lat and target_lon):
+        logger.warning("[ETA] Missing required params")
         return Response({"error": "bus_id, target_lat, and target_lon are required"}, status=400)
 
     try:
         bus_pos = VehiclePosition.objects.filter(bus_id=bus_id).latest('recorded_at')
+        logger.info(f"[ETA] Found bus position for {bus_id}: {bus_pos}")
     except VehiclePosition.DoesNotExist:
+        logger.error(f"[ETA] No position found for bus_id={bus_id}")
         return Response({"error": "No recent position for this bus"}, status=404)
 
     bus_point = bus_pos.location
     target_point = Point(float(target_lon), float(target_lat), srid=4326)
 
-    # Since bus_point is a geography field, .distance() correctly returns meters.
-    distance_m = bus_point.distance(target_point)
+    logger.info(f"[ETA CALCULATION START]")
+    logger.info(f"[ETA] Driver position: LAT={bus_pos.location.y:.6f}, LON={bus_pos.location.x:.6f}")
+    logger.info(f"[ETA] Rider position: LAT={float(target_lat):.6f}, LON={float(target_lon):.6f}")
+
+    # Since bus_point is a geography field, .distance() returns meters.
+    distance_m = bus_pos.location.distance(target_point)
+    logger.info(f"[ETA] Distance: {distance_m:.2f} meters ({distance_m/1000:.2f} km)")
 
     # Estimate average speed (e.g., 10 m/s ~ 36 km/h)
     # Use the bus's last reported speed, with a fallback.
     avg_speed_m_per_s = bus_pos.speed_mps if bus_pos.speed_mps and bus_pos.speed_mps > 0 else 10.0
+    logger.info(f"[ETA] Bus speed: {avg_speed_m_per_s:.2f} m/s ({avg_speed_m_per_s * 3.6:.2f} km/h)")
+    
     eta_seconds = distance_m / avg_speed_m_per_s
+    logger.info(f"[ETA] ETA seconds: {eta_seconds:.2f}")
     
     # Deconstruct total seconds into hours, minutes, and seconds for a richer response
     if distance_m > 10:
         m, s = divmod(eta_seconds, 60)
         h, m = divmod(m, 60)
         eta_structured = {"hours": int(h), "minutes": int(m), "seconds": int(s)}
+        logger.info(f"[ETA] Final ETA: {eta_structured['hours']}h {eta_structured['minutes']}m {eta_structured['seconds']}s")
     else:
         eta_structured = {"hours": 0, "minutes": 0, "seconds": 0}
+        logger.info(f"[ETA] Driver is very close (< 10m), ETA = 0")
+        
+    logger.info(f"[ETA CALCULATION END]")
         
     data = {
         "bus_id": bus_id,
@@ -92,8 +109,12 @@ def eta(request):
         "eta": eta_structured,
         "last_reported": bus_pos.recorded_at,
     }
-
+    
+    logger.info(f"[ETA] Response data: {data}")
     return Response(data)
+
+
+ 
 
 @api_view(['GET'])
 def buses_nearby(request):
@@ -284,12 +305,21 @@ def driver_login(request):
         route_id = str(latest_trip.route.id) if (latest_trip and latest_trip.route) else None
 
         # Generate JWT tokens using Simple JWT so frontend has a consistent token format
-        refresh = RefreshToken.for_user(user)
-        access_token = str(refresh.access_token)
+        try:
+            from rest_framework_simplejwt.tokens import RefreshToken
+            refresh = RefreshToken.for_user(user)
+            access_token = str(refresh.access_token)
+            refresh_token = str(refresh)
+        except ImportError:
+            # Fallback if rest_framework_simplejwt not installed - use a simple token
+            import base64
+            token_data = f"{user.id}:{user.username}:{timezone.now().isoformat()}"
+            access_token = base64.b64encode(token_data.encode()).decode()
+            refresh_token = access_token
 
         return Response({
             "access": access_token,
-            "refresh": str(refresh),
+            "refresh": refresh_token,
             "driver_name": user.get_full_name() or user.username,
             "bus_id": str(bus.id) if bus else None,
             "route_id": route_id
@@ -332,12 +362,21 @@ def rider_login(request):
         if not profile.is_commuter:
             return Response({"error": "This user is not a rider."}, status=403)
 
-        refresh = RefreshToken.for_user(user)
-        access_token = str(refresh.access_token)
+        try:
+            from rest_framework_simplejwt.tokens import RefreshToken
+            refresh = RefreshToken.for_user(user)
+            access_token = str(refresh.access_token)
+            refresh_token = str(refresh)
+        except ImportError:
+            # Fallback if rest_framework_simplejwt not installed - use a simple token
+            import base64
+            token_data = f"{user.id}:{user.username}:{timezone.now().isoformat()}"
+            access_token = base64.b64encode(token_data.encode()).decode()
+            refresh_token = access_token
 
         return Response({
             "access": access_token,
-            "refresh": str(refresh),
+            "refresh": refresh_token,
             "user": {"id": user.id, "username": user.username, "email": user.email}
         })
     except CustomUserProfile.DoesNotExist:
@@ -378,6 +417,10 @@ def get_driver_profile(request):
     including their assigned bus and route details.
     """
     user = request.user
+    auth_header = request.META.get('HTTP_AUTHORIZATION', 'NO_AUTH_HEADER')
+    print(f"[DEBUG get_driver_profile] Auth header: {auth_header[:50] if auth_header else 'None'}...")
+    print(f"[DEBUG get_driver_profile] User: {user}, Authenticated: {user.is_authenticated}")
+    
     try:
         # 1. Verify the user is a driver through their profile.
         driver_profile = user.profile
@@ -386,9 +429,16 @@ def get_driver_profile(request):
 
         # 2. Find the bus assigned to this driver (may be None) and the latest route.
         bus = Bus.objects.filter(driver=driver_profile).first()
-        latest_trip = Trip.objects.filter(bus=bus).order_by('-departure_time').first() if bus else None
+        print(f"[DEBUG get_driver_profile] user={user.username}, driver_profile={driver_profile.id}, bus={bus}")
+        
+        # Query trips related to this driver's profile (through buses driven by this profile)
+        # This ensures we get trips even if the bus assignment recently changed
+        latest_trip = Trip.objects.filter(bus__driver=driver_profile).order_by('-departure_time').first()
+        print(f"[DEBUG get_driver_profile] latest_trip={latest_trip}, status={latest_trip.status if latest_trip else None}")
+        
         route = latest_trip.route if (latest_trip and latest_trip.route) else None
         active_trip_id = latest_trip.id if latest_trip and latest_trip.status in [Trip.STATUS_PENDING, Trip.STATUS_STARTED] else None
+        print(f"[DEBUG get_driver_profile] active_trip_id={active_trip_id}")
 
         route_serializer = RouteSerializer(route) if route else None
 
@@ -465,78 +515,38 @@ def driver_onboard(request):
     trip_obj = None
     if route_id and bus:
         try:
+            # First, end any previously active trips for this bus
+            active_trips = Trip.objects.filter(bus=bus, status=Trip.STATUS_STARTED)
+            for trip in active_trips:
+                trip.status = Trip.STATUS_FINISHED
+                trip.finished_at = timezone.now()
+                trip.save(update_fields=['status', 'finished_at'])
+                logger.warning("driver_onboard: ended previous trip %s for bus %s", trip.id, bus.id)
+            
             route = Route.objects.get(pk=route_id)
             # Create a trip starting now with minimal required fields
-            from django.utils import timezone as dj_timezone
-            trip_obj = Trip.objects.create(bus=bus, route=route, departure_time=dj_timezone.now())
+            trip_obj = Trip.objects.create(bus=bus, route=route, departure_time=timezone.now())
+            print(f"[DEBUG driver_onboard] Created trip {trip_obj.id} for bus {bus.id}")
         except Route.DoesNotExist:
+            print(f"[DEBUG driver_onboard] Route {route_id} not found!")
             return Response({"error": "invalid_route", "message": "Provided route_id does not exist."}, status=400)
-        except Exception:
+        except Exception as e:
+            print(f"[DEBUG driver_onboard] Failed to create trip: {e}")
             logger.exception("driver_onboard: failed to create trip for bus %s and route %s", bus_plate, route_id)
             return Response({"error": "failed", "message": "Could not create trip for bus."}, status=500)
 
-    # If a trip was created, start the simulation automatically
+    # If a trip was created, mark it as pending but do NOT auto-start simulation here.
+    # Trips should be explicitly started via the `start_trip` endpoint so drivers
+    # control when a trip moves from pending -> started. This avoids the frontend
+    # seeing "Trip already started" when a user finishes onboarding then presses
+    # the Start button.
     if trip_obj:
-        # This logic is borrowed from the start_trip view to ensure consistency.
-        # In a larger application, this could be refactored into a shared utility function.
-        def _simulate_onboard_trip(trip_pk, speed=10.0, interval=2.0):
-            try:
-                # Re-fetch objects inside the thread
-                t = Trip.objects.select_related('route', 'bus').get(pk=trip_pk)
-                route = t.route
-                bus = t.bus
-                if not route or not bus:
-                    logger.error(f"Cannot simulate trip {trip_pk}: missing route or bus.")
-                    return
-
-                # Mark trip as started
-                t.status = Trip.STATUS_STARTED
-                t.started_at = dj_timezone.now()
-                t.save(update_fields=['status', 'started_at'])
-
-                coords = list(route.geometry.coords)
-                points = [Point(c[0], c[1], srid=4326) for c in coords]
-                start_index = 0 # Default to start of the route
-
-                # Simple step-through simulation
-                for i in range(start_index, len(points)):
-                    point = points[i]
-                    lon, lat = point.x, point.y
-                    
-                    heading = None
-                    if i < len(points) - 1:
-                        nlon, nlat = points[i + 1].x, points[i + 1].y
-                        dy = nlat - lat
-                        dx = nlon - lon
-                        heading = math.degrees(math.atan2(dy, dx))
-
-                    # Create VehiclePosition record
-                    vp = VehiclePosition.objects.create(
-                        bus=bus,
-                        location=Point(lon, lat, srid=4326),
-                        heading_deg=heading,
-                        speed_mps=speed,
-                    )
-                    # Update the master Bus location
-                    bus.current_location = vp.location
-                    bus.last_reported_at = dj_timezone.now()
-                    bus.save(update_fields=['current_location', 'last_reported_at'])
-
-                    time.sleep(interval)
-
-                # Mark trip as finished
-                t.status = Trip.STATUS_FINISHED
-                t.finished_at = dj_timezone.now()
-                t.save(update_fields=['status', 'finished_at'])
-                logger.info(f"Auto-simulation for trip {t.id} finished.")
-
-            except Exception:
-                logger.exception(f'onboard_simulate: unexpected error in background simulator for trip {trip_pk}')
-
-        # Spawn the simulation in a background thread so the API returns immediately
-        logger.info(f"Spawning auto-simulation for newly created trip {trip_obj.id}")
-        simulation_thread = threading.Thread(target=_simulate_onboard_trip, args=(trip_obj.id,), daemon=True)
-        simulation_thread.start()
+        try:
+            trip_obj.status = Trip.STATUS_PENDING
+            trip_obj.save(update_fields=['status'])
+            logger.info(f"driver_onboard: created trip {trip_obj.id} and set to PENDING for bus {bus.id}")
+        except Exception:
+            logger.exception(f"driver_onboard: could not set trip {trip_obj.id} to PENDING")
 
     # Return collected onboarding result
     data = {
@@ -544,6 +554,7 @@ def driver_onboard(request):
         "bus": BusNearbySerializer(bus).data if bus else None,
         "route": RouteSerializer(route).data if (trip_obj and trip_obj.route) else None,
         "trip_id": str(trip_obj.id) if trip_obj else None,
+        "active_trip_id": str(trip_obj.id) if trip_obj else None,  # Include for consistency with get_driver_profile
     }
 
     return Response(data)
@@ -602,12 +613,22 @@ def register_user(request):
         # driver onboarding endpoints. We intentionally do not create a Bus here.
 
         # Generate JWT tokens for the new user for immediate login
-        refresh = RefreshToken.for_user(user)
+        try:
+            from rest_framework_simplejwt.tokens import RefreshToken
+            refresh = RefreshToken.for_user(user)
+            access_token = str(refresh.access_token)
+            refresh_token = str(refresh)
+        except ImportError:
+            # Fallback if rest_framework_simplejwt not installed - use a simple token
+            import base64
+            token_data = f"{user.id}:{user.username}:{timezone.now().isoformat()}"
+            access_token = base64.b64encode(token_data.encode()).decode()
+            refresh_token = access_token
 
         return Response({
             "message": "User created successfully.",
-            "access": str(refresh.access_token),
-            "refresh": str(refresh),
+            "access": access_token,
+            "refresh": refresh_token,
             "user": {"id": user.id, "username": user.username, "email": user.email, "role": role}
         }, status=201)
 
@@ -650,117 +671,41 @@ def buses_to_destination(request):
 @permission_classes([IsAuthenticated])
 def start_trip(request, trip_id):
     """
-    Starts a trip simulation in a background thread. Accepts optional JSON body:
-      { "speed_mps": 10.0, "interval_seconds": 2 }
-    The endpoint returns immediately with status 200 and spawns a daemon thread
-    that writes VehiclePosition rows and updates the Bus current_location.
+    Starts a trip: mark as started, set started_at, and optionally spawn a
+    background simulator to emit VehiclePosition records along the route.
     """
     try:
         trip = Trip.objects.select_related('route', 'bus').get(pk=trip_id)
     except Trip.DoesNotExist:
-        return Response({"error": "trip_not_found"}, status=404)
+        return Response({"error": "Trip not found."}, status=404)
 
-    # Verify the requesting user is the assigned driver for this bus
-    user_profile = None
-    try:
-        user_profile = request.user.profile
-    except Exception:
-        return Response({"error": "profile_not_found"}, status=403)
+    # Only allow starting if not already started
+    if trip.status == Trip.STATUS_STARTED:
+        return Response({"error": "Trip already started."}, status=400)
 
-    if not trip.bus or trip.bus.driver_id != user_profile.id:
-        return Response({"error": "forbidden", "message": "You are not the driver of this trip's bus."}, status=403)
-
-    # Read optional params
-    body = request.data or {}
-    speed_mps = float(body.get('speed_mps', 10.0))
-    interval_seconds = float(body.get('interval_seconds', 2.0))
-
-    # Persist optional start stop and start time if provided
-    start_stop_id = body.get('start_stop_id')
-    start_time_str = body.get('start_time')
-    updated_fields = []
-    if start_stop_id:
-        try:
-            stop = Stop.objects.get(pk=start_stop_id)
-            trip.current_stop = stop
-            updated_fields.append('current_stop')
-        except Stop.DoesNotExist:
-            # Ignore invalid stop id - don't block simulation for testing
-            logger.warning('start_trip: invalid start_stop_id=%s for trip=%s', start_stop_id, trip.id)
-
-    if start_time_str:
-        # Accept ISO datetime or HH:MM time-only string. Try parse_datetime first.
-        try:
-            from django.utils.dateparse import parse_datetime, parse_time
-            dt = parse_datetime(start_time_str)
-            if dt is None:
-                t = parse_time(start_time_str)
-                if t is not None:
-                    # Combine with today's date in server timezone
-                    now = dj_timezone.now()
-                    dt = datetime.datetime(now.year, now.month, now.day, t.hour, t.minute)
-                    try:
-                        dt = dj_timezone.make_aware(dt)
-                    except Exception:
-                        pass
-        except Exception:
-            dt = None
-
-        if dt is not None:
-            # Ensure timezone-aware datetime
-            try:
-                if dt.tzinfo is None:
-                    dt = dj_timezone.make_aware(dt)
-            except Exception:
-                pass
-            trip.departure_time = dt
-            updated_fields.append('departure_time')
-
-    if updated_fields:
-        try:
-            trip.save(update_fields=updated_fields)
-        except Exception:
-            logger.exception('start_trip: failed to save trip updated fields %s for trip %s', updated_fields, trip.id)
-
-    # Mark trip started immediately
+    # Mark as started
     trip.status = Trip.STATUS_STARTED
     trip.started_at = dj_timezone.now()
     trip.save(update_fields=['status', 'started_at'])
 
-    # Spawn background thread to perform simulation
-    def _simulate(trip_pk, speed, interval):
+    # Spawn a background simulation thread to create VehiclePosition points
+    def _simulate_trip(trip_pk, speed=10.0, interval=2.0):
         try:
             t = Trip.objects.select_related('route', 'bus').get(pk=trip_pk)
             route = t.route
             bus = t.bus
             if not route or not bus:
+                logger.error(f"Cannot simulate trip {trip_pk}: missing route or bus.")
                 return
 
-            # Extract coordinates from LineString geometry: sequence of (lon, lat)
             coords = list(route.geometry.coords)
-            # Convert coords to list of (lat, lon) for our app LatLng usage
             points = [Point(c[0], c[1], srid=4326) for c in coords]
-
             start_index = 0
-            if t.current_stop and t.current_stop.location:
-                # Find the point in the geometry that is closest to the starting stop's location.
-                # This makes the simulation start from the correct point on the polyline.
-                min_dist = float('inf')
-                for i, point in enumerate(points):
-                    dist = t.current_stop.location.distance(point)
-                    if dist < min_dist:
-                        min_dist = dist
-                        start_index = i
-                
-                if start_index > 0:
-                    logger.info(f"Simulation for trip {t.id} will start at index {start_index} (closest to stop {t.current_stop.id}).")
 
-            # Simple step-through simulation: visit each point, create VehiclePosition
-            # Start the loop from the calculated start_index.
             for i in range(start_index, len(points)):
                 point = points[i]
                 lon, lat = point.x, point.y
-                # compute heading towards next point if available
+
                 heading = None
                 if i < len(points) - 1:
                     nlon, nlat = points[i + 1].x, points[i + 1].y
@@ -768,49 +713,49 @@ def start_trip(request, trip_id):
                     dx = nlon - lon
                     heading = math.degrees(math.atan2(dy, dx))
 
-                # Create VehiclePosition
                 vp = VehiclePosition.objects.create(
                     bus=bus,
                     location=Point(lon, lat, srid=4326),
                     heading_deg=heading,
                     speed_mps=speed,
                 )
-                # Update current location on Bus
                 bus.current_location = vp.location
                 bus.last_reported_at = dj_timezone.now()
                 bus.save(update_fields=['current_location', 'last_reported_at'])
 
-                # Sleep to simulate time passing
                 time.sleep(interval)
 
             # Mark trip finished
             t.status = Trip.STATUS_FINISHED
             t.finished_at = dj_timezone.now()
             t.save(update_fields=['status', 'finished_at'])
+            logger.info(f"Simulation for trip {t.id} finished.")
+
         except Exception:
-            logger.exception('simulate_trip: unexpected error in background simulator')
+            logger.exception(f"start_trip: unexpected error in background simulator for trip {trip_pk}")
 
-    thr = threading.Thread(target=_simulate, args=(trip.id, speed_mps, interval_seconds), daemon=True)
-    thr.start()
+    simulation_thread = threading.Thread(target=_simulate_trip, args=(trip.id,), daemon=True)
+    simulation_thread.start()
 
-    return Response({"status": "simulation_started", "trip_id": str(trip.id)})
+    return Response({"status": "started", "trip_id": str(trip.id)})
 
 
-class EndTripView(generics.UpdateAPIView):
-    """
-    A view to end a trip.
-    """
-    queryset = Trip.objects.all()
-    serializer_class = TripSerializer
+class EndTripView(APIView):
     permission_classes = [IsAuthenticated]
-    lookup_field = 'id'
 
-    def update(self, request, *args, **kwargs):
-        trip_id = self.kwargs.get('trip_id')
+    def post(self, request, trip_id):
         try:
-            trip = Trip.objects.get(id=trip_id)
-            trip.status = Trip.STATUS_FINISHED
-            trip.save(update_fields=['status'])
-            return Response({'status': 'trip ended'}, status=status.HTTP_200_OK)
+            trip = Trip.objects.get(pk=trip_id)
         except Trip.DoesNotExist:
-            return Response({'error': 'Trip not found'}, status=status.HTTP_404_NOT_FOUND)
+            return Response({"error": "Trip not found."}, status=404)
+
+        if trip.status == Trip.STATUS_FINISHED:
+            return Response({"error": "Trip already finished."}, status=400)
+
+        trip.status = Trip.STATUS_FINISHED
+        trip.finished_at = dj_timezone.now()
+        trip.save(update_fields=['status', 'finished_at'])
+
+        return Response({"status": "finished", "trip_id": str(trip.id)})
+
+

@@ -5,6 +5,8 @@ import 'package:bosta_frontend/services/api_endpoints.dart';
 import 'package:bosta_frontend/services/auth_service.dart';
 import 'package:flutter/material.dart';
 import 'package:go_router/go_router.dart';
+import 'package:flutter/cupertino.dart';
+import 'package:geolocator/geolocator.dart';
 import 'package:google_fonts/google_fonts.dart';
 import 'package:http/http.dart' as http;
 import 'package:provider/provider.dart';
@@ -17,6 +19,8 @@ class DriverOnboardingScreen extends StatefulWidget {
   @override
   State<DriverOnboardingScreen> createState() => _DriverOnboardingScreenState();
 }
+
+enum _StartLocationChoice { fromStop, fromCurrentLocation }
 
 class _DriverOnboardingScreenState extends State<DriverOnboardingScreen> {
   final _formKey = GlobalKey<FormState>();
@@ -31,13 +35,16 @@ class _DriverOnboardingScreenState extends State<DriverOnboardingScreen> {
   AppRoute? _selectedRoute; // Will hold the full details of the chosen route
   String? _selectedStartLocation; // Will store the selected stop name
   String? _selectedStopId; // id of selected stop (robust choice for Dropdown)
+  String? _selectedEndStopId; // id of selected destination stop
   fm.LatLng? _selectedStartLatLng; // Point picked on the map
   final MapController _mapController = MapController();
   final bool _forceShowMap = false; // debug toggle to force map rendering
   TimeOfDay? _selectedStartTime;
+  _StartLocationChoice _startLocationChoice = _StartLocationChoice.fromStop;
   // Polling state removed from onboarding — tracking handled on Driver map screen
 
   bool _isLoading = false;
+  bool _isFetchingLocation = false;
   bool _isFetchingRoutes = true;
   String? _errorMessage;
   bool _isProfileSaved = false; // To control button visibility
@@ -61,7 +68,7 @@ class _DriverOnboardingScreenState extends State<DriverOnboardingScreen> {
       final authService = Provider.of<AuthService>(context, listen: false);
       final token = authService.currentState.token;
 
-      final uri = Uri.parse(ApiEndpoints.routes);
+      final uri = Uri.parse(ApiEndpoints.allRoutes);
       // Routes are public; attempt to fetch without requiring authentication.
       final headers = <String, String>{};
       if (token != null) headers['Authorization'] = 'Bearer $token';
@@ -135,7 +142,7 @@ class _DriverOnboardingScreenState extends State<DriverOnboardingScreen> {
         });
         return;
       }
-      final uri = Uri.parse('${ApiEndpoints.routes}$routeId/'); // e.g., /api/routes/route-1/
+      final uri = Uri.parse(ApiEndpoints.routeDetails(routeId)); // e.g., /api/routes/route-1/
       final response = await http.get(uri, headers: {'Authorization': 'Bearer $token'});
       debugPrint("[Onboarding] _fetchRouteDetails: Request took ${stopwatch.elapsedMilliseconds}ms. Status: ${response.statusCode}");
       if (response.statusCode == 200) {
@@ -213,6 +220,60 @@ class _DriverOnboardingScreenState extends State<DriverOnboardingScreen> {
     return const fm.Distance().as(fm.LengthUnit.Meter, p, closestPoint);
   }
 
+  /// Find the index in the route geometry nearest to [point].
+  int _nearestGeometryIndex(List<fm.LatLng> geometry, fm.LatLng point) {
+    const distance = fm.Distance();
+    int bestIdx = 0;
+    double bestDist = double.infinity;
+    for (int i = 0; i < geometry.length; i++) {
+      final d = distance.as(fm.LengthUnit.Meter, geometry[i], point);
+      if (d < bestDist) {
+        bestDist = d;
+        bestIdx = i;
+      }
+    }
+    return bestIdx;
+  }
+
+  /// Returns the list of geometry points representing the route segment
+  /// between the selected destination and the selected start location.
+  /// If not enough information is available, returns null.
+  List<fm.LatLng>? _getSelectedRouteSegment() {
+    if (_selectedRoute == null || _selectedRoute!.geometry.isEmpty) return null;
+
+    // Resolve start point
+    fm.LatLng? startPoint;
+    if (_selectedStopId != null) {
+      final stops = _selectedRoute!.stops.where((s) => s.id == _selectedStopId).toList();
+      if (stops.isNotEmpty) startPoint = fm.LatLng(stops.first.location.latitude, stops.first.location.longitude);
+    }
+    if (startPoint == null && _selectedStartLatLng != null) startPoint = _selectedStartLatLng;
+
+    // Resolve end (destination) point
+    fm.LatLng? endPoint;
+    if (_selectedEndStopId != null) {
+      final stops = _selectedRoute!.stops.where((s) => s.id == _selectedEndStopId).toList();
+      if (stops.isNotEmpty) endPoint = fm.LatLng(stops.first.location.latitude, stops.first.location.longitude);
+    }
+
+    if (startPoint == null || endPoint == null) return null;
+
+    final geom = _selectedRoute!.geometry;
+    final si = _nearestGeometryIndex(geom, startPoint);
+    final ei = _nearestGeometryIndex(geom, endPoint);
+
+    List<fm.LatLng> segment;
+    if (si <= ei) {
+      // We want destination -> start, so reverse the slice so it begins at destination
+      segment = geom.sublist(si, ei + 1).reversed.toList();
+    } else {
+      // si > ei: slice from ei..si gives end->start already
+      segment = geom.sublist(ei, si + 1);
+    }
+
+    return segment;
+  }
+
   void _onMapTap(fm.LatLng latlng) {
     // Validate point is near the route (100m tolerance)
     final meters = _distanceToRouteMeters(latlng);
@@ -231,6 +292,52 @@ class _DriverOnboardingScreenState extends State<DriverOnboardingScreen> {
     try {
       _mapController.move(latlng, 15.0);
     } catch (_) {}
+  }
+
+  Future<void> _useCurrentLocation() async {
+    setState(() {
+      _isFetchingLocation = true;
+      _errorMessage = null;
+    });
+
+    try {
+      LocationPermission permission = await Geolocator.checkPermission();
+      if (permission == LocationPermission.denied) {
+        permission = await Geolocator.requestPermission();
+        if (permission == LocationPermission.denied) {
+          throw Exception('Location permissions are denied.');
+        }
+      }
+      if (permission == LocationPermission.deniedForever) {
+        throw Exception('Location permissions are permanently denied.');
+      }
+
+      final position = await Geolocator.getCurrentPosition(desiredAccuracy: LocationAccuracy.high);
+      final latlng = fm.LatLng(position.latitude, position.longitude);
+
+      // Validate that the current location is near the route
+      final meters = _distanceToRouteMeters(latlng);
+      if (meters > 200) { // Using a 200m tolerance for current location
+        throw Exception('Your current location is ${meters.toStringAsFixed(0)}m away from the route. Please move closer to the route to start.');
+      }
+
+      // If valid, update the state
+      setState(() {
+        _selectedStartLatLng = latlng;
+        _selectedStopId = null; // Clear stop selection
+        _selectedStartLocation = 'Current Location';
+        _errorMessage = null;
+      });
+      _mapController.move(latlng, 15.0);
+
+    } catch (e) {
+      setState(() {
+        _errorMessage = e.toString();
+        _startLocationChoice = _StartLocationChoice.fromStop; // Revert choice on error
+      });
+    } finally {
+      setState(() => _isFetchingLocation = false);
+    }
   }
 
   Future<void> _submitForm() async {
@@ -252,6 +359,7 @@ class _DriverOnboardingScreenState extends State<DriverOnboardingScreen> {
     debugPrint("[Onboarding] _submitForm: _selectedRouteId = $_selectedRouteId");
     debugPrint("[Onboarding] _submitForm: _selectedStopId = $_selectedStopId");
     debugPrint("[Onboarding] _submitForm: _selectedStartLatLng = $_selectedStartLatLng");
+    debugPrint("[Onboarding] _submitForm: _selectedEndStopId = $_selectedEndStopId");
     debugPrint("[Onboarding] _submitForm: _selectedStartTime = ${_selectedStartTime?.format(context)}");
     debugPrint("[Onboarding] _submitForm: isLocationSelected = $isLocationSelected");
 
@@ -259,7 +367,7 @@ class _DriverOnboardingScreenState extends State<DriverOnboardingScreen> {
     final bool isRouteSelected = _selectedRouteId != null || _selectedRoute != null;
     if (!isRouteSelected || !isLocationSelected || _selectedStartTime == null) {
       setState(() {
-        _errorMessage = 'Please complete all fields, including route, start location, and start time.';
+        _errorMessage = 'Please complete all fields, including route, start/end locations, and start time.';
         // This is a good place to trigger autovalidation to highlight missing fields.
         _formKey.currentState?.validate();
       });
@@ -299,6 +407,7 @@ class _DriverOnboardingScreenState extends State<DriverOnboardingScreen> {
       busCapacity: int.parse(busCapacityText),
       routeId: routeId, // Now guaranteed to be non-null
       startStopId: _selectedStopId,
+      endStopId: _selectedEndStopId,
       startTime: isoStart,
       startLat: _selectedStartLatLng?.latitude,
       startLon: _selectedStartLatLng?.longitude,
@@ -447,6 +556,42 @@ class _DriverOnboardingScreenState extends State<DriverOnboardingScreen> {
       const SizedBox(height: 20),
       if (showMap) ...[
         Padding(
+          padding: const EdgeInsets.only(bottom: 16.0),
+          child: CupertinoSlidingSegmentedControl<_StartLocationChoice>(
+            groupValue: _startLocationChoice,
+            backgroundColor: const Color(0xFF1F2327),
+            thumbColor: const Color(0xFF2ED8C3),
+            padding: const EdgeInsets.all(4),
+            onValueChanged: (choice) {
+              if (choice == null) return;
+              setState(() => _startLocationChoice = choice);
+              if (choice == _StartLocationChoice.fromCurrentLocation) {
+                _useCurrentLocation();
+              } else {
+                // When switching back to "Select a Stop", clear the "Current Location" data
+                if (_selectedStartLocation == 'Current Location') {
+                  setState(() {
+                    _selectedStartLatLng = null;
+                    _selectedStartLocation = null;
+                    _errorMessage = null;
+                  });
+                }
+              }
+            },
+            children: {
+              _StartLocationChoice.fromStop: Padding(
+                padding: const EdgeInsets.symmetric(horizontal: 20, vertical: 8),
+                child: Text('Select a Stop', style: GoogleFonts.urbanist(color: Colors.white, fontWeight: FontWeight.w600)),
+              ),
+              _StartLocationChoice.fromCurrentLocation: Padding(
+                padding: const EdgeInsets.symmetric(horizontal: 20, vertical: 8),
+                child: Text('Current Location', style: GoogleFonts.urbanist(color: Colors.white, fontWeight: FontWeight.w600)),
+              ),
+            },
+          ),
+        ),
+        if (_isFetchingLocation) const Center(child: Padding(padding: EdgeInsets.all(8.0), child: CircularProgressIndicator())),
+        Padding(
           padding: const EdgeInsets.only(bottom: 8.0),
           child: Text('Pick start location on map (tap to choose)', style: GoogleFonts.urbanist(color: Colors.white70)),
         ),
@@ -477,6 +622,12 @@ class _DriverOnboardingScreenState extends State<DriverOnboardingScreen> {
                       color: Colors.orangeAccent,
                       strokeWidth: 5.0,
                     ),
+                    if (_getSelectedRouteSegment() != null)
+                      Polyline(
+                        points: _getSelectedRouteSegment()!.map((g) => fm.LatLng(g.latitude, g.longitude)).toList(),
+                        color: Colors.greenAccent,
+                        strokeWidth: 6.0,
+                      ),
                   ],
                 ),
               MarkerLayer(markers: [
@@ -511,18 +662,79 @@ class _DriverOnboardingScreenState extends State<DriverOnboardingScreen> {
         const SizedBox(height: 12),
         // If the route has stops, show the dropdown below the map so the
         // driver can either tap a marker or pick from the list.
-        if (isRouteSelected) ...[
-          _buildStartLocationDropdown(isEnabled: hasStops),
-          const SizedBox(height: 12),
-        ],
+        if (_startLocationChoice == _StartLocationChoice.fromStop) ...[
+          if (isRouteSelected) ...[
+            _buildStartLocationDropdown(isEnabled: hasStops),
+            const SizedBox(height: 12),
+            _buildEndLocationDropdown(isEnabled: hasStops),
+            const SizedBox(height: 8),
+            if (_computeSelectedRouteEtaString() != null)
+              Padding(
+                padding: const EdgeInsets.only(bottom: 12.0),
+                child: Text('Estimated trip time: ${_computeSelectedRouteEtaString()}', style: GoogleFonts.urbanist(color: Colors.white70)),
+              ),
+            const SizedBox(height: 4),
+          ],
+        ]
       ] else ...[
-        _buildStartLocationDropdown(isEnabled: isRouteSelected && hasStops),
-        const SizedBox(height: 12),
+        if (_startLocationChoice == _StartLocationChoice.fromStop) ...[
+          _buildStartLocationDropdown(isEnabled: isRouteSelected && hasStops),
+          const SizedBox(height: 12),
+          _buildEndLocationDropdown(isEnabled: isRouteSelected && hasStops),
+          const SizedBox(height: 8),
+          if (_computeSelectedRouteEtaString() != null)
+            Padding(
+              padding: const EdgeInsets.only(bottom: 12.0),
+              child: Text('Estimated trip time: ${_computeSelectedRouteEtaString()}', style: GoogleFonts.urbanist(color: Colors.white70)),
+            ),
+        ]
       ],
 
       const SizedBox(height: 20),
       _buildStartTimePicker(isEnabled: isRouteSelected),
     ];
+  }
+
+  /// Compute ETA between the selected start location and selected destination.
+  /// Returns a nicely formatted string like '1h 12m', '45 min' or '<1 min'.
+  String? _computeSelectedRouteEtaString({double avgSpeedMps = 10.0}) {
+    if (_selectedRoute == null) return null;
+
+    // Resolve start point
+    fm.LatLng? startPoint;
+    if (_selectedStopId != null) {
+      final matches = _selectedRoute!.stops.where((st) => st.id == _selectedStopId).toList();
+      if (matches.isNotEmpty) {
+        final s = matches.first;
+        startPoint = fm.LatLng(s.location.latitude, s.location.longitude);
+      }
+    }
+    if (startPoint == null && _selectedStartLatLng != null) startPoint = _selectedStartLatLng;
+
+    // Resolve end point
+    fm.LatLng? endPoint;
+    if (_selectedEndStopId != null) {
+      final matches = _selectedRoute!.stops.where((st) => st.id == _selectedEndStopId).toList();
+      if (matches.isNotEmpty) {
+        final e = matches.first;
+        endPoint = fm.LatLng(e.location.latitude, e.location.longitude);
+      }
+    }
+
+    if (startPoint == null || endPoint == null) return null;
+
+    final distMeters = const fm.Distance().as(fm.LengthUnit.Meter, startPoint, endPoint);
+    if (distMeters <= 10) return '<1 min';
+
+    final etaSeconds = distMeters / avgSpeedMps;
+    int totalMinutes = (etaSeconds / 60).round();
+    if (totalMinutes < 1) return '<1 min';
+
+    final hours = totalMinutes ~/ 60;
+    final minutes = totalMinutes % 60;
+
+    if (hours > 0) return '${hours}h ${minutes}m';
+    return '$minutes min';
   }
 
   void _selectStop(RouteStop stop) {
@@ -531,8 +743,10 @@ class _DriverOnboardingScreenState extends State<DriverOnboardingScreen> {
 
     setState(() {
       _selectedStopId = stop.id;
+      _startLocationChoice = _StartLocationChoice.fromStop; // Ensure choice is correct
       _selectedStartLocation = stop.order != null
           ? 'Stop ${stop.order}'
+          // ignore: unnecessary_string_interpolations
           : '${stop.location.latitude.toStringAsFixed(5)}, ${stop.location.longitude.toStringAsFixed(5)}';
       _selectedStartLatLng = fm.LatLng(stop.location.latitude, stop.location.longitude);
       _errorMessage = null;
@@ -623,6 +837,7 @@ class _DriverOnboardingScreenState extends State<DriverOnboardingScreen> {
           _selectedRoute = null;
           _selectedStopId = null;
           _selectedStartLocation = null;
+          _selectedEndStopId = null;
         });
       });
     }
@@ -636,6 +851,7 @@ class _DriverOnboardingScreenState extends State<DriverOnboardingScreen> {
           _selectedRoute = null; // Clear details of previous route
           _selectedStopId = null;
           _selectedStartLocation = null;
+          _selectedEndStopId = null;
           debugPrint("[Onboarding] Route changed to $newRouteId. Clearing dependent state and fetching details.");
         });
         await _fetchRouteDetails(newRouteId);
@@ -726,7 +942,80 @@ class _DriverOnboardingScreenState extends State<DriverOnboardingScreen> {
           borderSide: const BorderSide(color: Color(0xFF2ED8C3)),
         ),
       ),
-      validator: (value) => value == null ? 'Starting location is required' : null,
+      validator: (value) {
+        if (_startLocationChoice == _StartLocationChoice.fromStop && value == null) return 'Starting location is required';
+        return null;
+      },
+    );
+  }
+
+  Widget _buildEndLocationDropdown({bool isEnabled = true}) {
+    final routeStops = _selectedRoute?.stops ?? [];
+
+    if (isEnabled && routeStops.isEmpty) {
+      return const SizedBox.shrink(); // Don't show if no stops
+    }
+
+    // Filter stops to only include those after the selected start stop
+    final startStopOrder = _selectedStopId != null
+        ? routeStops.firstWhere((s) => s.id == _selectedStopId, orElse: () => routeStops.first).order
+        : null;
+
+    final availableEndStops = startStopOrder != null
+        ? routeStops.where((s) => s.order != null && s.order! > startStopOrder).toList()
+        : routeStops;
+
+    final dropdownItems = availableEndStops.map((s) {
+      final label = s.order != null
+          ? 'Stop ${s.order} — ${s.location.latitude.toStringAsFixed(4)}, ${s.location.longitude.toStringAsFixed(4)}'
+          : '${s.location.latitude.toStringAsFixed(4)}, ${s.location.longitude.toStringAsFixed(4)}';
+      return DropdownMenuItem<String>(
+        value: s.id,
+        child: Text(label),
+      );
+    }).toList();
+
+    final hasValidStopSelection = _selectedEndStopId != null && availableEndStops.any((s) => s.id == _selectedEndStopId);
+    final safeSelectedStopId = hasValidStopSelection ? _selectedEndStopId : null;
+
+    if (!hasValidStopSelection && _selectedEndStopId != null) {
+      WidgetsBinding.instance.addPostFrameCallback((_) {
+        if (!mounted) return;
+        setState(() {
+          _selectedEndStopId = null;
+        });
+      });
+    }
+
+    return DropdownButtonFormField<String>(
+      key: ValueKey('end-stop-dropdown-${_selectedRoute?.id ?? 'none'}-${availableEndStops.length}-${safeSelectedStopId ?? 'none'}'),
+      value: safeSelectedStopId,
+      onChanged: !isEnabled || _selectedStopId == null ? null : (newStopId) {
+        if (newStopId != null) {
+          setState(() {
+            _selectedEndStopId = newStopId;
+          });
+        }
+      },
+      items: dropdownItems,
+      hint: Text(_selectedStopId == null ? 'Select a start location first' : 'Select Your Destination Stop'),
+      style: const TextStyle(color: Colors.white),
+      dropdownColor: const Color(0xFF1F2327),
+      decoration: InputDecoration(
+        filled: true,
+        fillColor: const Color(0xFF1F2327),
+        prefixIcon: const Icon(Icons.flag_outlined, color: Colors.white70),
+        border: OutlineInputBorder(
+          borderRadius: BorderRadius.circular(12),
+          borderSide: BorderSide.none,
+        ),
+        focusedBorder: OutlineInputBorder(
+          borderRadius: BorderRadius.circular(12),
+          borderSide: const BorderSide(color: Color(0xFF2ED8C3)),
+        ),
+        disabledBorder: OutlineInputBorder(borderRadius: BorderRadius.circular(12), borderSide: BorderSide.none),
+      ),
+      validator: (value) => value == null ? 'Destination is required' : null,
     );
   }
 

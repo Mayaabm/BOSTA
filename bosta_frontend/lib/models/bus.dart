@@ -35,6 +35,7 @@ class Bus {
   final String? lastReportedAt;
   final AppRoute? route;
   final EtaDuration? eta;
+  final EtaDuration? etaFromDriver; // ETA from driver's current position to rider's location
 
   Bus({
     required this.id,
@@ -49,6 +50,7 @@ class Bus {
     this.lastReportedAt,
     this.route,
     this.eta,
+    this.etaFromDriver,
   });
 
   factory Bus.fromJson(Map<String, dynamic> json) {
@@ -65,6 +67,7 @@ class Bus {
       lastReportedAt: json['last_reported_at'],
       route: json['route'] != null ? AppRoute.fromJson(json['route']) : null,
       eta: json['eta'] != null ? EtaDuration.fromJson(json['eta']) : null,
+      etaFromDriver: json['eta_from_driver'] != null ? EtaDuration.fromJson(json['eta_from_driver']) : null,
     );
   }
 }

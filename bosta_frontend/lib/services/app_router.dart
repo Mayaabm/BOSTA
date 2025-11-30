@@ -6,6 +6,7 @@ import '../screens/register_screen.dart';
 import '../screens/driver_dashboard_screen.dart'; // Corrected import path
 import '../screens/driver_onboarding_screen.dart';
 import '../screens/rider_home_screen.dart';
+import '../screens/server_config_screen.dart';
 import 'auth_service.dart';
 
 class AppRouter {
@@ -41,6 +42,14 @@ class AppRouter {
         GoRoute(
           path: '/driver/onboarding',
           builder: (context, state) => const DriverOnboardingScreen(),
+        ),
+        GoRoute(
+          path: '/settings/server',
+          builder: (context, state) => ServerConfigScreen(
+            onConfigSaved: () {
+              // Refresh or notify the app that config was changed
+            },
+          ),
         ),
       ],
       redirect: (BuildContext context, GoRouterState state) {

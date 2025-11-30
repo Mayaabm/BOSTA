@@ -4,9 +4,11 @@ import 'dart:math';
 
 import 'package:flutter/material.dart';
 import 'package:google_fonts/google_fonts.dart';
+import 'package:provider/provider.dart';
 
 import '../../../../models/bus.dart';
 import 'bus_details_modal.dart';
+import '../../services/auth_service.dart';
 
 class BusSuggestionCard extends StatelessWidget {
   final Bus bus;
@@ -78,9 +80,11 @@ class BusSuggestionCard extends StatelessWidget {
                       isScrollControlled: true,
                       backgroundColor: Colors.transparent,
                       builder: (context) {
+                        final authToken = Provider.of<AuthService>(context, listen: false).currentState.token;
                         return BusDetailsModal(
                           busId: bus.id,
                           onChooseBus: onChooseBus,
+                          authToken: authToken,
                         );
                       },
                     );

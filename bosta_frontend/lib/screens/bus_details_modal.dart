@@ -6,17 +6,20 @@ import 'package:intl/intl.dart';
 import '../models/user_location.dart';
 import '../models/bus.dart';
 import '../services/bus_service.dart';
+import '../services/trip_service.dart';
 
 class BusDetailsModal extends StatefulWidget {
   final String busId;
   final VoidCallback onChooseBus;
-
   final UserLocation? userLocation;
+  final String? authToken;
+
   const BusDetailsModal({
     super.key,
     required this.busId,
     required this.onChooseBus,
     this.userLocation,
+    this.authToken,
   });
 
   @override
@@ -32,6 +35,10 @@ class _BusDetailsModalState extends State<BusDetailsModal> {
   // Trip status
   String _tripStatus = "On Route";
   double _tripProgress = 0.0;
+  
+  // ETA from driver to rider
+  String? _etaFromDriver;
+  double? _distanceFromDriver;
 
   @override
   void initState() {
@@ -53,11 +60,46 @@ class _BusDetailsModalState extends State<BusDetailsModal> {
     if (showLoading && mounted) setState(() => _isLoading = true);
     try {
       final bus = await BusService.getBusDetails(widget.busId, userLocation: widget.userLocation);
+      
+      // Fetch ETA from driver to rider if user location and token are available
+      String? etaFromDriver;
+      double? distanceFromDriver;
+      
+      if (widget.userLocation != null && widget.authToken != null && bus.latitude != null && bus.longitude != null) {
+        try {
+          debugPrint('[BusDetailsModal] Fetching ETA from driver to rider...');
+          debugPrint('[BusDetailsModal] Driver position: LAT=${bus.latitude}, LON=${bus.longitude}');
+          debugPrint('[BusDetailsModal] Rider position: LAT=${widget.userLocation?.latitude}, LON=${widget.userLocation?.longitude}');
+          
+          final etaResponse = await TripService.fetchEta(
+            busId: widget.busId,
+            riderLat: widget.userLocation!.latitude,
+            riderLon: widget.userLocation!.longitude,
+            token: widget.authToken!,
+          );
+          
+          if (etaResponse != null) {
+            distanceFromDriver = etaResponse['distance_m']?.toDouble();
+            final estimatedMinutes = etaResponse['estimated_arrival_minutes'];
+            
+            if (estimatedMinutes != null) {
+              final minutes = estimatedMinutes.toInt();
+              etaFromDriver = '$minutes min';
+              debugPrint('[BusDetailsModal] ETA from driver to rider: $etaFromDriver (distance: ${distanceFromDriver?.toStringAsFixed(0)}m)');
+            }
+          }
+        } catch (e) {
+          debugPrint('[BusDetailsModal] Error fetching rider ETA: $e');
+        }
+      }
+      
       if (mounted) {
         setState(() {
           _busDetails = bus;
           _isLoading = false;
           _errorMessage = null;
+          _etaFromDriver = etaFromDriver;
+          _distanceFromDriver = distanceFromDriver;
           _updateTripStatus(bus);
         });
       }
@@ -262,14 +304,14 @@ class _BusDetailsModalState extends State<BusDetailsModal> {
           ),
           const SizedBox(height: 32),
           // Trip Stats
-          Row(
-            mainAxisAlignment: MainAxisAlignment.spaceAround,
-            children: [
-              _buildStatColumn('ETA to You', bus.eta?.toMinutesString() ?? '...'),
-              _buildStatColumn('Distance', bus.distanceMeters != null ? '${(bus.distanceMeters! / 1000).toStringAsFixed(1)} km' : '...'),
-              _buildStatColumn('Speed', '${(bus.speed ?? 0.0).toStringAsFixed(0)} km/h'),
-            ],
-          ),
+            Row(
+              mainAxisAlignment: MainAxisAlignment.spaceAround,
+              children: [
+                _buildStatColumn('ETA to You', _etaFromDriver ?? bus.eta?.toMinutesString() ?? '...'),
+                _buildStatColumn('Distance', _distanceFromDriver != null ? '${(_distanceFromDriver! / 1000).toStringAsFixed(1)} km' : (bus.distanceMeters != null ? '${(bus.distanceMeters! / 1000).toStringAsFixed(1)} km' : '...')),
+                _buildStatColumn('Speed', '${bus.speed.toStringAsFixed(0)} km/h'),
+              ],
+            ),
           const Spacer(),
           // Actions
           Row(

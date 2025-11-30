@@ -3,7 +3,7 @@ import 'package:flutter/cupertino.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_typeahead/flutter_typeahead.dart';
 import 'package:flutter_map/flutter_map.dart';
-import 'package:flutter/foundation.dart'; // Import for kDebugMode
+// Import for kDebugMode
 import 'package:bosta_frontend/models/place.dart';
 import 'package:bosta_frontend/models/user_location.dart';
 import 'package:geolocator/geolocator.dart';
@@ -11,10 +11,12 @@ import 'package:bosta_frontend/services/geocoding_service.dart';
 import 'package:google_fonts/google_fonts.dart';
 import 'package:latlong2/latlong.dart';
 import 'package:sliding_up_panel/sliding_up_panel.dart';
+import 'package:provider/provider.dart';
 
 import '../models/bus.dart'; // Using the actual model
 import '../models/app_route.dart'; // Using the unified route model
 import '../services/bus_service.dart'; // Using the actual service
+import '../services/auth_service.dart'; // For getting auth token
 // Using the actual service
 import 'bus_bottom_sheet.dart';
 import 'bus_details_modal.dart';
@@ -81,29 +83,11 @@ class _RiderHomeScreenState extends State<RiderHomeScreen> with TickerProviderSt
   }
 
   Future<void> _initializeUserLocation() async {
-    // In debug mode, simulate the rider's location to be near a stop for consistent testing.
-    if (kDebugMode) {
-      debugPrint("--- RIDER SIMULATION: ACTIVE (Debug Mode) ---");
-      // Simulate a location in Jbeil for testing
-      const mockLatitude = 34.1216;
-      const mockLongitude = 35.6489;
-
-      final mockPosition = Position(
-        latitude: mockLatitude,
-        longitude: mockLongitude,
-        timestamp: DateTime.now(),
-        accuracy: 5.0, altitude: 0, heading: 0, speed: 0, speedAccuracy: 0, altitudeAccuracy: 0.0, headingAccuracy: 0.0
-      );
-
-      debugPrint("Simulating rider location at: (${mockPosition.latitude}, ${mockPosition.longitude})");
-      if (mounted) setState(() => _currentPosition = mockPosition);
-    } else {
-      // In release mode, or if the route isn't available for simulation, use real GPS.
-      await Geolocator.requestPermission();
-      final position = await Geolocator.getCurrentPosition();
-      if (mounted) setState(() => _currentPosition = position);
-      _startListeningToLocation(); // Start listening for real location updates.
-    }
+    // In release mode, or if the route isn't available for simulation, use real GPS.
+    await Geolocator.requestPermission();
+    final position = await Geolocator.getCurrentPosition();
+    if (mounted) setState(() => _currentPosition = position);
+    _startListeningToLocation(); // Start listening for real location updates.
 
     // Once location is set (real or mock), move the map and start fetching buses.
     if (_currentPosition != null) {
@@ -206,18 +190,24 @@ class _RiderHomeScreenState extends State<RiderHomeScreen> with TickerProviderSt
       context: context,
       isScrollControlled: true,
       backgroundColor: Colors.transparent,
-      builder: (context) => BusDetailsModal(
-        busId: bus.id,
-        userLocation: _currentPosition != null
-            ? UserLocation(latitude: _currentPosition!.latitude, longitude: _currentPosition!.longitude)
-            : null,
-        onChooseBus: () {
-          // This would be the action to confirm the trip
-          ScaffoldMessenger.of(context).showSnackBar(
-            SnackBar(content: Text("Trip with Bus ${bus.plateNumber} confirmed!")),
-          );
-        },
-      ),
+      builder: (context) {
+        // Get auth token from Provider
+        final authToken = Provider.of<AuthService>(context, listen: false).currentState.token;
+        
+        return BusDetailsModal(
+          busId: bus.id,
+          userLocation: _currentPosition != null
+              ? UserLocation(latitude: _currentPosition!.latitude, longitude: _currentPosition!.longitude)
+              : null,
+          authToken: authToken,
+          onChooseBus: () {
+            // This would be the action to confirm the trip
+            ScaffoldMessenger.of(context).showSnackBar(
+              SnackBar(content: Text("Trip with Bus ${bus.plateNumber} confirmed!")),
+            );
+          },
+        );
+      },
     ).whenComplete(() {
       // When the modal is closed, deselect the bus and stop updates
       _deselectBus();

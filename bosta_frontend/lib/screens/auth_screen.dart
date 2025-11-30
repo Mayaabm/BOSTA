@@ -1,5 +1,6 @@
 import 'package:bosta_frontend/screens/register_screen.dart'; // Make sure this import is correct
 import 'package:flutter/material.dart';
+import 'package:go_router/go_router.dart';
 import 'package:google_fonts/google_fonts.dart';
 import 'package:provider/provider.dart';
 import '../services/auth_service.dart';
@@ -76,6 +77,26 @@ class _AuthScreenState extends State<AuthScreen> {
   Widget build(BuildContext context) {
     return Scaffold(
       backgroundColor: const Color(0xFF12161A),
+      appBar: AppBar(
+        title: Text(
+          'Bosta',
+          style: GoogleFonts.poppins(
+            fontSize: 24,
+            fontWeight: FontWeight.w600,
+            color: Colors.white,
+          ),
+        ),
+        backgroundColor: const Color(0xFF1F2327),
+        actions: [
+          IconButton(
+            icon: const Icon(Icons.settings),
+            tooltip: 'Server Settings',
+            onPressed: () {
+              GoRouter.of(context).push('/settings/server');
+            },
+          ),
+        ],
+      ),
       body: SafeArea(
         child: SingleChildScrollView(
           padding: const EdgeInsets.symmetric(horizontal: 24.0),

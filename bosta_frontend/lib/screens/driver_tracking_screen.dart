@@ -64,7 +64,7 @@ class _DriverTrackingScreenState extends State<DriverTrackingScreen> {
     final token = auth.currentState.token;
     if (token == null) return;
     try {
-      final uri = Uri.parse(ApiEndpoints.busById(busId));
+      final uri = Uri.parse(ApiEndpoints.busDetails(busId));
       final res = await http.get(uri, headers: {'Authorization': 'Bearer $token', 'Content-Type': 'application/json'});
       if (res.statusCode == 200) {
         final data = json.decode(res.body);
