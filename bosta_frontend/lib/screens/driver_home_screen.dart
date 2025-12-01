@@ -91,7 +91,7 @@ class _DriverHomeScreenState extends State<DriverHomeScreen> {
     try {
       debugPrint("[_startNewTrip] Calling TripService.startNewTrip with tripId: $tripIdToStart");
       // Call the service to start the existing trip on the backend.
-      final newTripId = await TripService.startNewTrip(
+      final newTripId = await TripService().startNewTrip(
         token,
         tripId: tripIdToStart, // Pass the correct tripId.
       );
@@ -103,7 +103,10 @@ class _DriverHomeScreenState extends State<DriverHomeScreen> {
         _isLoading = false;
       });
       debugPrint("=== START NEW TRIP DEBUG (SUCCESS) ===");
-      _resumeTrip(); // Navigate to the dashboard
+      // FIX: Directly navigate to the dashboard instead of calling _resumeTrip,
+      // which was causing an infinite loop.
+      debugPrint("[_startNewTrip] Navigating to dashboard to start/resume trip $newTripId.");
+      GoRouter.of(context).go('/driver/dashboard');
     } catch (e) {
       debugPrint("[_startNewTrip] Exception caught: $e");
       debugPrint("[_startNewTrip] Exception type: ${e.runtimeType}");
@@ -119,9 +122,12 @@ class _DriverHomeScreenState extends State<DriverHomeScreen> {
   }
 
   void _resumeTrip() {
-    // The dashboard will see that a trip is active and resume it.
-    debugPrint("Navigating to dashboard to resume trip $_activeTripId.");
-    GoRouter.of(context).go('/driver/dashboard');
+    // If resuming, we now ensure the trip is started on the backend first,
+    // then navigate. The logic for starting is now consolidated in _startNewTrip.
+    // If the trip is already started, the service will handle it gracefully.
+    // We now call _startNewTrip which will handle the navigation on success.
+    // This is the correct fix from the previous step.
+    _startNewTrip(); 
   }
 
   void _changeSetup() {

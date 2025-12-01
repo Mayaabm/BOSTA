@@ -27,6 +27,8 @@ class _DriverDashboardScreenState extends State<DriverDashboardScreen> {
   geo.Position? _currentPosition;
   StreamSubscription<geo.Position>? _positionStream;
   Timer? _updateTimer;
+  Timer? _backendPollTimer;
+  bool _useBackendLocation = false; // Dev toggle: use backend location instead of device GPS
 
   // State for ETA and trip details
   String _tripStatus = "Starting Trip...";
@@ -59,6 +61,7 @@ class _DriverDashboardScreenState extends State<DriverDashboardScreen> {
   void dispose() {
     _positionStream?.cancel();
     _updateTimer?.cancel();
+    _stopBackendLocationPoll();
     super.dispose();
   }
 
@@ -132,8 +135,13 @@ class _DriverDashboardScreenState extends State<DriverDashboardScreen> {
       });
     } else {
       // Permissions are granted, proceed with location-dependent setup.
-      _startLocationListener();
-      await _getInitialLocationAndStartUpdates();
+      if (_useBackendLocation) {
+        _startBackendLocationPoll();
+      } else {
+        // Default behavior: use device GPS
+        _startLocationListener();
+        await _getInitialLocationAndStartUpdates();
+      }
     }
   }
 
@@ -205,8 +213,11 @@ class _DriverDashboardScreenState extends State<DriverDashboardScreen> {
     _positionStream = geo.Geolocator.getPositionStream(locationSettings: locationSettings).listen(
       (position) {
         if (mounted && !_isTripEnded) {
-          setState(() => _currentPosition = position);
-          _updateDriverMarker(position);
+          // Only apply device GPS updates when we're NOT using backend location override
+          if (!_useBackendLocation) {
+            setState(() => _currentPosition = position);
+            _updateDriverMarker(position);
+          }
         }
       },
       onError: (error) {
@@ -214,6 +225,53 @@ class _DriverDashboardScreenState extends State<DriverDashboardScreen> {
         setState(() => _errorMessage = "Lost GPS signal.");
       },
     );
+  }
+
+  /// Starts polling the backend for the bus location and applies it to `_currentPosition`.
+  void _startBackendLocationPoll() {
+    // Cancel any existing poller
+    _backendPollTimer?.cancel();
+    if (_busId == null || _authToken == null) return;
+
+    // Immediately fetch once, then poll periodically
+    Future<void> fetchAndApply() async {
+      try {
+        final bus = await BusService.getBusById(_busId!);
+        if (!mounted) return;
+        final lat = bus.latitude;
+        final lon = bus.longitude;
+        final pseudoPosition = geo.Position(
+          latitude: lat,
+          longitude: lon,
+          timestamp: DateTime.now(),
+          accuracy: 5.0,
+          altitude: 0.0,
+          heading: 0.0,
+          speed: 0.0,
+          speedAccuracy: 0.0,
+          altitudeAccuracy: 0.0,
+          headingAccuracy: 0.0,
+        );
+        setState(() {
+          _currentPosition = pseudoPosition;
+        });
+        _mapController.move(fm.LatLng(lat, lon), 15.0);
+        // Trigger ETA fetch using the new position
+        await _fetchEtaAndUpdateBackend();
+      } catch (e) {
+        debugPrint("Failed to fetch backend bus location: $e");
+      }
+    }
+
+    // Run immediately
+    fetchAndApply();
+    // Poll every 5 seconds
+    _backendPollTimer = Timer.periodic(const Duration(seconds: 5), (_) => fetchAndApply());
+  }
+
+  void _stopBackendLocationPoll() {
+    _backendPollTimer?.cancel();
+    _backendPollTimer = null;
   }
 
   Future<void> _getInitialLocationAndStartUpdates() async {
@@ -402,6 +460,27 @@ class _DriverDashboardScreenState extends State<DriverDashboardScreen> {
                       _currentPosition!.latitude, _currentPosition!.longitude),
                   15.0,
                 );
+              }
+            },
+          ),
+          IconButton(
+            icon: Icon(_useBackendLocation ? Icons.cloud_done : Icons.cloud_off),
+            tooltip: _useBackendLocation ? 'Using backend location' : 'Use backend location',
+            onPressed: () {
+              // This logic ensures we cleanly switch between location sources.
+              final newMode = !_useBackendLocation;
+              setState(() => _useBackendLocation = newMode);
+
+              if (newMode) {
+                // Switched TO backend location
+                _positionStream?.cancel(); // Stop listening to device GPS
+                _updateTimer?.cancel();
+                _startBackendLocationPoll();
+              } else {
+                // Switched FROM backend location (back to device GPS)
+                _stopBackendLocationPoll();
+                _startLocationListener(); // Restart device GPS listener
+                _getInitialLocationAndStartUpdates(); // Re-initialize periodic updates
               }
             },
           ),

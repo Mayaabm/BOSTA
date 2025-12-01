@@ -34,7 +34,7 @@ class TripService {
 
   /// Starts a new trip based on the driver's saved setup.
   /// Returns the new trip ID on success.
-  static Future<String> startNewTrip(String token, {
+  Future<String> startNewTrip(String token, {
     required String tripId, // We need the ID of the trip to start.
     String? startStopId,
     String? endStopId,
@@ -89,13 +89,14 @@ class TripService {
         debugPrint("=== TRIP SERVICE DEBUG (FAILED - NO TRIP_ID) ===");
         throw Exception('Failed to start trip: trip_id not found in response.');
       }
-    } else if (response.statusCode == 400) {
-      // Common case: trip already started on the server. Try to fetch the
-      // active trip from the profile and return that id so the UI can resume.
-      try {
-        final existing = await checkForActiveTrip(token);
-        if (existing != null) return existing;
-      } catch (_) {}
+    } else if (response.statusCode == 400 && response.body.contains('already started')) {
+      // --- FIX: Handle the "Trip already started" case gracefully ---
+      // This is not a true error. It means the trip is active, so we can proceed.
+      // We can just return the tripId that we were trying to start.
+      debugPrint("[TripService.startNewTrip] Handled 400: Trip is already started. Proceeding with tripId: $tripId");
+      debugPrint("=== TRIP SERVICE DEBUG (SUCCESS - ALREADY STARTED) ===");
+      return tripId;
+    } else if (response.statusCode == 400) { // Handle other 400 errors
       debugPrint("=== TRIP SERVICE DEBUG (FAILED - 400) ===");
       throw Exception('Failed to start trip. Status: 400, Body: ${response.body}');
     } else {

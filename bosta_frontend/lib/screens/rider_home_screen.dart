@@ -1,7 +1,9 @@
 import 'dart:async';
+import 'dart:convert';
 import 'package:flutter/cupertino.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_typeahead/flutter_typeahead.dart';
+import 'package:flutter/foundation.dart'; // For kDebugMode
 import 'package:flutter_map/flutter_map.dart';
 // Import for kDebugMode
 import 'package:bosta_frontend/models/place.dart';
@@ -14,6 +16,7 @@ import 'package:sliding_up_panel/sliding_up_panel.dart';
 import 'package:provider/provider.dart';
 
 import '../models/bus.dart'; // Using the actual model
+import '../services/api_endpoints.dart';
 import '../models/app_route.dart'; // Using the unified route model
 import '../services/bus_service.dart'; // Using the actual service
 import '../services/auth_service.dart'; // For getting auth token
@@ -21,6 +24,7 @@ import '../services/auth_service.dart'; // For getting auth token
 import 'bus_bottom_sheet.dart';
 import 'bus_details_modal.dart';
 
+import 'package:http/http.dart' as http;
 enum RiderView { planTrip, nearbyBuses }
 
 class RiderHomeScreen extends StatefulWidget {
@@ -36,6 +40,7 @@ class _RiderHomeScreenState extends State<RiderHomeScreen> with TickerProviderSt
   Position? _currentPosition;
   StreamSubscription<Position>? _positionStream;
   Timer? _busUpdateTimer;
+  Timer? _mockLocationPollTimer;
 
   // State for Route 224
   // static const String _targetRouteId = '224'; // No longer needed for nearby buses
@@ -48,6 +53,7 @@ class _RiderHomeScreenState extends State<RiderHomeScreen> with TickerProviderSt
   Bus? _selectedBus;
   Timer? _selectedBusDetailsTimer;
   bool _isAutoCentering = false;
+  bool _useMockLocation = false; // Dev toggle
 
   // Animation for bus markers
   late final AnimationController _pulseController; // For bus marker pulse animation
@@ -76,6 +82,7 @@ class _RiderHomeScreenState extends State<RiderHomeScreen> with TickerProviderSt
     _positionStream?.cancel();
     _busUpdateTimer?.cancel();
     _selectedBusDetailsTimer?.cancel();
+    _mockLocationPollTimer?.cancel();
     _markerAnimationController.dispose();
     _pulseController.dispose();
     _destinationController.dispose();
@@ -83,6 +90,10 @@ class _RiderHomeScreenState extends State<RiderHomeScreen> with TickerProviderSt
   }
 
   Future<void> _initializeUserLocation() async {
+    if (_useMockLocation) {
+      _startMockLocationPoll();
+      return;
+    }
     // In release mode, or if the route isn't available for simulation, use real GPS.
     await Geolocator.requestPermission();
     final position = await Geolocator.getCurrentPosition();
@@ -109,6 +120,11 @@ class _RiderHomeScreenState extends State<RiderHomeScreen> with TickerProviderSt
   }
 
   void _startListeningToLocation() {
+    // Don't listen to real GPS if we are using mock locations
+    if (_useMockLocation) {
+      _positionStream?.cancel();
+      return;
+    }
     _positionStream?.cancel();
     _positionStream = Geolocator.getPositionStream().listen((Position position) {
       if (mounted) {
@@ -119,6 +135,57 @@ class _RiderHomeScreenState extends State<RiderHomeScreen> with TickerProviderSt
         });
       }
     });
+  }
+
+  /// Starts polling the backend for the mock rider location.
+  void _startMockLocationPoll() {
+    _mockLocationPollTimer?.cancel();
+
+    Future<void> fetchAndApply() async {
+      try {
+        final uri = Uri.parse(ApiEndpoints.devRiderLocation);
+        final response = await http.get(uri);
+
+        if (response.statusCode == 200) {
+          final data = json.decode(response.body);
+          final lat = data['latitude'];
+          final lon = data['longitude'];
+
+          if (lat != null && lon != null) {
+            final mockPosition = Position(
+              latitude: lat,
+              longitude: lon,
+              timestamp: DateTime.now(),
+              accuracy: 5.0, altitude: 0.0, heading: 0.0, speed: 0.0, speedAccuracy: 0.0,
+              altitudeAccuracy: 0.0, headingAccuracy: 0.0,
+            );
+
+            if (mounted) {
+              setState(() => _currentPosition = mockPosition);
+              // If this is the first time, move the map.
+              if (_mockLocationPollTimer == null) {
+                mapController.move(LatLng(lat, lon), 14.0);
+              }
+              // --- FIX: Immediately fetch buses after location update ---
+              // This ensures the "nearby buses" list updates as soon as the
+              // mock location changes, instead of waiting for the next timer tick.
+              _fetchNearbyBuses();
+              _startPeriodicBusUpdates(); // Also ensure the timer is running.
+            }
+          }
+        }
+      } catch (e) {
+        debugPrint("Failed to fetch mock rider location: $e");
+      }
+    }
+
+    fetchAndApply(); // Fetch immediately
+    _mockLocationPollTimer = Timer.periodic(const Duration(seconds: 3), (_) => fetchAndApply());
+  }
+
+  void _stopMockLocationPoll() {
+    _mockLocationPollTimer?.cancel();
+    _mockLocationPollTimer = null;
   }
   void _listenToMapEvents() {
     mapController.mapEventStream.listen((event) {
@@ -426,15 +493,46 @@ class _RiderHomeScreenState extends State<RiderHomeScreen> with TickerProviderSt
   Marker _buildSelectedBusMarker({LatLng? animatedPosition}) {
     final position = animatedPosition ?? (_selectedBus != null ? LatLng(_selectedBus!.latitude, _selectedBus!.longitude) : const LatLng(0, 0));
     return Marker(
-      point: position,
-      width: 40,
-      height: 40,
-      child: _buildStaticSelectedMarker(),
+      point: position, // The geographical point for the marker
+      width: 150, // Increased width to accommodate text
+      height: 80, // Increased height
+      child: _buildStaticSelectedMarker(), // The custom marker widget
     );
   }
 
   Widget _buildStaticSelectedMarker() {
-    return _BusMarker(pulseController: _pulseController, isSelected: true, busColor: const Color(0xFF2ED8C3));
+    // Default values for when bus details are still loading
+    String etaText = '...';
+    if (_selectedBus?.eta != null) {
+      final eta = _selectedBus!.eta!;
+      if (eta.hours > 0) {
+        etaText = '${eta.hours}h ${eta.minutes}m';
+      } else if (eta.minutes > 0) {
+        etaText = '${eta.minutes} min';
+      } else {
+        etaText = '<1 min';
+      }
+    }
+
+    final driverName = _selectedBus?.driverName ?? 'Loading...';
+
+    return Column(
+      mainAxisSize: MainAxisSize.min,
+      children: [
+        // Custom info box above the marker
+        Container(
+          padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
+          decoration: BoxDecoration(
+            color: const Color(0xFF1F2327),
+            borderRadius: BorderRadius.circular(8),
+            border: Border.all(color: const Color(0xFF2ED8C3), width: 1),
+          ),
+          child: Text('$driverName · $etaText', style: GoogleFonts.urbanist(color: Colors.white, fontWeight: FontWeight.bold)),
+        ),
+        const SizedBox(height: 4), // Space between info box and marker
+        _BusMarker(pulseController: _pulseController, isSelected: true, busColor: const Color(0xFF2ED8C3)),
+      ],
+    );
   }
 
   Marker _buildUserLocationMarker() {
@@ -485,6 +583,31 @@ class _RiderHomeScreenState extends State<RiderHomeScreen> with TickerProviderSt
           mainAxisSize: MainAxisSize.min,
           children: [
             // We replace DualSearchBar with a TypeAheadField for interactive search.
+            if (kDebugMode) // Only show this toggle in debug builds
+              Row(
+                mainAxisAlignment: MainAxisAlignment.end,
+                children: [
+                  Text("Mock Location", style: GoogleFonts.urbanist(color: Colors.white70, fontSize: 12)),
+                  const SizedBox(width: 4),
+                  Switch(
+                    value: _useMockLocation,
+                    onChanged: (value) {
+                      setState(() => _useMockLocation = value);
+                      if (value) {
+                        _positionStream?.cancel(); // Stop real GPS
+                        _busUpdateTimer?.cancel(); // Stop old bus polling
+                        _startMockLocationPoll();
+                      } else {
+                        _stopMockLocationPoll();
+                        _startListeningToLocation(); // Restart real GPS
+                        _startPeriodicBusUpdates(); // Restart bus polling
+                      }
+                    },
+                    activeColor: const Color(0xFF2ED8C3),
+                  ),
+                ],
+              ),
+            const SizedBox(height: 8),
             TypeAheadField<Place>(
               controller: _destinationController,
               suggestionsCallback: (pattern) async {
@@ -577,7 +700,7 @@ class _BusMarker extends StatelessWidget {
   final AnimationController pulseController;
   final bool isSelected;
   final Color busColor; // Add this
-
+  
   const _BusMarker({
     required this.pulseController,
     this.isSelected = false,
@@ -586,6 +709,7 @@ class _BusMarker extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
+    final markerSize = isSelected ? 40.0 : 30.0;
     return Stack(
       alignment: Alignment.center,
       children: [
@@ -607,12 +731,14 @@ class _BusMarker extends StatelessWidget {
           ),
         // Main bus icon container
         Container(
+          width: markerSize,
+          height: markerSize,
           padding: const EdgeInsets.all(4),
           decoration: BoxDecoration(
             shape: BoxShape.circle,
             color: isSelected ? Colors.white : const Color(0xFF12161A),
             border: Border.all(
-              color: busColor,
+              color: isSelected ? const Color(0xFF2ED8C3) : busColor,
               width: isSelected ? 3 : 2,
             ),
             boxShadow: [

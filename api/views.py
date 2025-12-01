@@ -20,6 +20,8 @@ from django.conf import settings
 import threading
 import time
 import math
+import json
+import os
 from django.utils import timezone as dj_timezone
  
 logger = logging.getLogger(__name__)
@@ -119,36 +121,64 @@ def eta(request):
 @api_view(['GET'])
 def buses_nearby(request):
     """
-    Returns a list of buses near the given latitude and longitude.
-    This is now optimized to query the Bus model directly, which is updated
-    by the simulation script.
+    Returns a list of buses near the given latitude and longitude that are on active trips.
+    Only shows drivers that are currently logged in and have an active trip (STATUS_STARTED).
     """
-    lat = float(request.query_params.get('lat'))
-    lon = float(request.query_params.get('lon'))
-    radius = float(request.query_params.get('radius', 10000))  # meters
+    # --- Start of new logging ---
+    logger.info("\n--- BUSES NEARBY DEBUG ---")
+    try:
+        lat = float(request.query_params.get('lat'))
+        lon = float(request.query_params.get('lon'))
+        radius = float(request.query_params.get('radius', 10000))  # meters
+        logger.info(f"[buses_nearby] Rider location: lat={lat}, lon={lon}, radius={radius}m")
 
-    user_location = Point(lon, lat, srid=4326)
+        user_location = Point(lon, lat, srid=4326)
 
-    # Query the Bus model directly for current locations within the radius.
-    # This is more efficient than iterating through all historical VehiclePosition records.
-    active_buses = Bus.objects.filter(
-        current_location__isnull=False,
-        last_reported_at__gte=timezone.now() - timedelta(hours=2) # Only show recently updated buses
-    ).annotate(
-        distance_m=Distance('current_location', user_location)
-    ).filter(
-        distance_m__lte=radius
-    ).order_by('distance_m')
+        # Step 1: Get all buses that have a location and a recent update.
+        recently_updated_buses = Bus.objects.filter(
+            current_location__isnull=False,
+            last_reported_at__gte=timezone.now() - timedelta(hours=2)
+        )
+        logger.info(f"[buses_nearby] Found {recently_updated_buses.count()} buses with a recent location.")
 
-    # Annotate the route name for each bus from its most recent trip
-    latest_trip_subquery = Trip.objects.filter(
-        bus=OuterRef('pk'),
-        departure_time__lte=timezone.now()  # Only consider trips that have already departed
-    ).order_by('-departure_time').values('route__name')[:1]
-    buses_with_route = active_buses.annotate(route_name=Coalesce(Subquery(latest_trip_subquery), None))
+        # Step 2: From those, find the ones associated with a 'STARTED' trip.
+        buses_with_started_trip = recently_updated_buses.filter(
+            trips__status=Trip.STATUS_STARTED
+        ).distinct()
+        logger.info(f"[buses_nearby] Found {buses_with_started_trip.count()} buses with a 'STARTED' trip.")
+        if buses_with_started_trip.count() == 0:
+            all_trips = Trip.objects.all().values('bus_id', 'status')
+            logger.warning(f"[buses_nearby] No buses have a 'STARTED' trip. Current trip statuses: {list(all_trips)}")
 
-    serializer = BusNearbySerializer(buses_with_route, many=True)
-    return Response(serializer.data)
+        # Step 3: Annotate distance for the remaining buses.
+        buses_with_distance = buses_with_started_trip.annotate(
+            distance_m=Distance('current_location', user_location)
+        )
+
+        # Step 4: Filter by distance (radius).
+        final_buses = buses_with_distance.filter(
+            distance_m__lte=radius
+        ).order_by('distance_m')
+        logger.info(f"[buses_nearby] Found {final_buses.count()} buses within the {radius}m radius.")
+
+        # Step 5: Annotate the route name for each bus from its active trip.
+        latest_trip_subquery = Trip.objects.filter(
+            bus=OuterRef('pk'),
+            status=Trip.STATUS_STARTED
+        ).order_by('-departure_time').values('route__name')[:1]
+        buses_with_route = final_buses.annotate(route_name=Coalesce(Subquery(latest_trip_subquery), None))
+
+        serializer = BusNearbySerializer(buses_with_route, many=True)
+        logger.info(f"[buses_nearby] Serializing {len(serializer.data)} buses to return to the rider.")
+        logger.info("--- BUSES NEARBY DEBUG (END) ---\n")
+        return Response(serializer.data)
+
+    except (ValueError, TypeError) as e:
+        logger.error(f"[buses_nearby] Invalid input parameters: {e}")
+        return Response({"error": "Invalid 'lat', 'lon', or 'radius' provided."}, status=status.HTTP_400_BAD_REQUEST)
+    except Exception as e:
+        logger.exception("[buses_nearby] An unexpected error occurred.")
+        return Response({"error": "An internal error occurred."}, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
 
 @api_view(['GET'])
 def buses_for_route(request):
@@ -234,6 +264,10 @@ def get_bus_details(request, bus_id):
     # Annotate with the latest route name
     latest_trip = Trip.objects.filter(bus=bus).order_by('-departure_time').first()
     bus.route_name = latest_trip.route.name if latest_trip and latest_trip.route else None
+    
+    # Add driver's name to the bus object for serialization
+    if bus.driver and bus.driver.user:
+        bus.driver_name = bus.driver.user.get_full_name() or bus.driver.user.username
 
     # Check for rider location to calculate ETA and distance
     rider_lat = request.query_params.get('lat')
@@ -260,6 +294,8 @@ def get_bus_details(request, bus_id):
     # Manually add the eta structure if it was calculated
     if hasattr(bus, 'eta'):
         data['eta'] = bus.eta
+    if hasattr(bus, 'driver_name'):
+        data['driver_name'] = bus.driver_name
     return Response(data)
 
 @api_view(['POST'])
@@ -688,6 +724,16 @@ def start_trip(request, trip_id):
     trip.started_at = dj_timezone.now()
     trip.save(update_fields=['status', 'started_at'])
 
+    # --- FIX: Set initial location immediately ---
+    # This prevents a race condition where the bus is started but has no location
+    # until the background thread runs for the first time.
+    if trip.route and trip.route.geometry and trip.bus:
+        initial_point = trip.route.geometry.interpolate_normalized(0)
+        trip.bus.current_location = initial_point
+        trip.bus.last_reported_at = dj_timezone.now()
+        trip.bus.save(update_fields=['current_location', 'last_reported_at'])
+        logger.info(f"start_trip: Set initial location for bus {trip.bus.id} to start of route {trip.route.id}")
+
     # Spawn a background simulation thread to create VehiclePosition points
     def _simulate_trip(trip_pk, speed=10.0, interval=2.0):
         try:
@@ -719,6 +765,8 @@ def start_trip(request, trip_id):
                     heading_deg=heading,
                     speed_mps=speed,
                 )
+                # --- FIX: Update the main Bus model as well ---
+                # This ensures the bus is visible to the buses_nearby endpoint.
                 bus.current_location = vp.location
                 bus.last_reported_at = dj_timezone.now()
                 bus.save(update_fields=['current_location', 'last_reported_at'])
@@ -759,3 +807,22 @@ class EndTripView(APIView):
         return Response({"status": "finished", "trip_id": str(trip.id)})
 
 
+@api_view(['GET'])
+def get_dev_rider_location(request):
+    """
+    DEV-ONLY endpoint. Reads the mock rider location from the .dev_rider_location.json
+    file at the project root and returns it.
+    """
+    # The file is in the project root, so we can use settings.BASE_DIR
+    file_path = os.path.join(settings.BASE_DIR, '.dev_rider_location.json')
+    
+    if not os.path.exists(file_path):
+        return Response({"error": "Mock location file not found."}, status=status.HTTP_404_NOT_FOUND)
+        
+    try:
+        with open(file_path, 'r') as f:
+            data = json.load(f)
+        return Response(data)
+    except Exception as e:
+        logger.error(f"[get_dev_rider_location] Error reading mock location file: {e}")
+        return Response({"error": "Could not read or parse mock location file."}, status=status.HTTP_500_INTERNAL_SERVER_ERROR)

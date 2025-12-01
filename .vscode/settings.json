@@ -2,6 +2,7 @@
     "terminal.integrated.env.windows": {
     "Path": "C:\\Program Files\\GDAL;${env:Path}"
 },
-"java.configuration.updateBuildConfiguration": "interactive"
+"java.configuration.updateBuildConfiguration": "interactive",
+"cmake.sourceDirectory": "C:/Users/mayab/.vscode/BOSTA/bosta_frontend/linux"
 
 }
