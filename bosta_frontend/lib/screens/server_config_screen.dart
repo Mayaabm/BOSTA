@@ -6,9 +6,9 @@ class ServerConfigScreen extends StatefulWidget {
   final VoidCallback onConfigSaved;
 
   const ServerConfigScreen({
-    Key? key,
+    super.key,
     required this.onConfigSaved,
-  }) : super(key: key);
+  });
 
   @override
   State<ServerConfigScreen> createState() => _ServerConfigScreenState();

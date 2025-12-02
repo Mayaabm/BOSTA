@@ -2,7 +2,6 @@ import 'dart:async';
 import 'dart:convert';
 
 import 'package:bosta_frontend/models/app_route.dart';
-import 'package:bosta_frontend/screens/rider_home_screen.dart';
 import 'package:bosta_frontend/services/auth_service.dart';
 import 'package:bosta_frontend/services/trip_service.dart';
 import 'package:bosta_frontend/services/bus_service.dart';
@@ -35,6 +34,7 @@ class _DriverDashboardScreenState extends State<DriverDashboardScreen> {
   String _eta = "-- min";
   String _distanceRemaining = "-- km";
   String? _destinationName;
+  String? _routeName;
 
   bool _isLoading = true;
   String? _errorMessage;
@@ -44,6 +44,7 @@ class _DriverDashboardScreenState extends State<DriverDashboardScreen> {
   AppRoute? _assignedRoute;
   String? _busId;
   RouteStop? _destinationStop;
+  DriverInfo? _driverInfo; // Store driver info for the card
   String? _authToken;
   String? _activeTripId;
   List<fm.LatLng> _tripRouteGeometry = []; // To store the specific part of the route for this trip
@@ -70,7 +71,7 @@ class _DriverDashboardScreenState extends State<DriverDashboardScreen> {
     if (!mounted) return;
 
     final authState = Provider.of<AuthService>(context, listen: false).currentState;
-    if (authState.assignedRoute == null || authState.driverInfo == null || authState.token == null) {
+    if (authState.assignedRoute == null || authState.driverInfo == null || authState.token == null || !authState.driverInfo!.onboardingComplete) {
       setState(() {
         _errorMessage = "Could not load trip data. Please go back and set up the trip again.";
         _isLoading = false;
@@ -90,6 +91,7 @@ class _DriverDashboardScreenState extends State<DriverDashboardScreen> {
 
     setState(() {
       _assignedRoute = authState.assignedRoute;
+      _driverInfo = authState.driverInfo; // Store driver info
       _busId = authState.driverInfo!.busId;
       _authToken = authState.token;
       if (_assignedRoute != null && authState.selectedEndStopId != null) {
@@ -104,6 +106,7 @@ class _DriverDashboardScreenState extends State<DriverDashboardScreen> {
       } else if (_assignedRoute != null && _assignedRoute!.stops.isNotEmpty) {
         _destinationStop = _assignedRoute!.stops.last;
         _destinationName = 'Final Destination';
+        _routeName = _assignedRoute!.name;
       }
       _activeTripId = tripId;
 
@@ -236,7 +239,7 @@ class _DriverDashboardScreenState extends State<DriverDashboardScreen> {
     // Immediately fetch once, then poll periodically
     Future<void> fetchAndApply() async {
       try {
-        final bus = await BusService.getBusById(_busId!);
+        final bus = await BusService.getBusDetails(_busId!);
         if (!mounted) return;
         final lat = bus.latitude;
         final lon = bus.longitude;
@@ -451,6 +454,7 @@ class _DriverDashboardScreenState extends State<DriverDashboardScreen> {
         foregroundColor: Colors.white,
         title: Text('Driver Dashboard', style: GoogleFonts.urbanist()),
         actions: [
+          // Toggle for mock location (for dev)
           IconButton(
             icon: const Icon(Icons.my_location),
             onPressed: () {
@@ -462,6 +466,7 @@ class _DriverDashboardScreenState extends State<DriverDashboardScreen> {
                 );
               }
             },
+            tooltip: 'Center map on current location',
           ),
           IconButton(
             icon: Icon(_useBackendLocation ? Icons.cloud_done : Icons.cloud_off),
@@ -484,9 +489,18 @@ class _DriverDashboardScreenState extends State<DriverDashboardScreen> {
               }
             },
           ),
+          // End Trip button
           IconButton(
             icon: const Icon(Icons.stop_circle_outlined, color: Colors.redAccent),
             onPressed: _isTripEnded ? null : _endTrip,
+            tooltip: 'End current trip',
+          ),
+          IconButton(
+            icon: const Icon(Icons.edit_location_alt_outlined),
+            tooltip: 'Edit Profile',
+            onPressed: () {
+              GoRouter.of(context).go('/driver/onboarding?edit=true');
+            },
           ),
         ],
       ),
@@ -547,6 +561,8 @@ class _DriverDashboardScreenState extends State<DriverDashboardScreen> {
               ),
             ),
           _buildTripInfoCard(),
+          _buildProfileCard(), // New profile card
+          _buildAlerts(), // New alerts
         ],
       ),
     );
@@ -559,14 +575,14 @@ class _DriverDashboardScreenState extends State<DriverDashboardScreen> {
       height: 60,
       child: const _BusMarker(
         // Using the same marker style as the rider screen for consistency
-        pulseController: null, // No pulse needed for the driver's own marker
+        pulseController: null, // No pulse needed for driver's own marker
         isSelected: true,
         busColor: Colors.white,
         iconColor: Color(0xFF12161A),
       ),
     );
   }
-
+  
   Widget _buildTripInfoCard() {
     return Positioned(
       bottom: 20,
@@ -581,7 +597,7 @@ class _DriverDashboardScreenState extends State<DriverDashboardScreen> {
             mainAxisSize: MainAxisSize.min,
             crossAxisAlignment: CrossAxisAlignment.start,
             children: [
-              Text(
+              if (_destinationName != null) Text(
                 'Trip to: ${_destinationName ?? "Final Stop"}',
                 style: GoogleFonts.urbanist(
                   color: Colors.white,
@@ -589,6 +605,20 @@ class _DriverDashboardScreenState extends State<DriverDashboardScreen> {
                   fontWeight: FontWeight.bold,
                 ),
               ),
+              if (_routeName != null) ...[
+                const SizedBox(height: 4),
+                Text(
+                  'Route: $_routeName',
+                  style: GoogleFonts.urbanist(
+                    color: Colors.grey[300],
+                    fontSize: 14,
+                    fontWeight: FontWeight.w500,
+                  ),
+                ),
+              ],
+              if (_destinationName != null || _routeName != null)
+                const SizedBox(height: 12),
+
               const SizedBox(height: 12),
               Row(
                 mainAxisAlignment: MainAxisAlignment.spaceBetween,
@@ -644,6 +674,131 @@ class _DriverDashboardScreenState extends State<DriverDashboardScreen> {
           ),
         ),
       ],
+    );
+  }
+
+  Widget _buildProfileCard() {
+    if (_driverInfo == null) return const SizedBox.shrink();
+
+    final driverName = '${_driverInfo!.firstName} ${_driverInfo!.lastName}';
+    final busPlate = _driverInfo!.busPlateNumber ?? 'N/A';
+    final busCapacity = _driverInfo!.busCapacity?.toString() ?? 'N/A';
+    final routeName = _assignedRoute?.name ?? 'Not Assigned';
+    final onboardingComplete = _driverInfo!.onboardingComplete;
+    final documentsApproved = _driverInfo!.documentsApproved ?? false; // Assuming this field exists
+
+    return Positioned(
+      top: 10,
+      left: 10,
+      right: 10,
+      child: Card(
+        color: const Color(0xFF1F2327).withOpacity(0.9),
+        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
+        child: Padding(
+          padding: const EdgeInsets.all(16.0),
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              Text(
+                'Hello, $driverName!',
+                style: GoogleFonts.urbanist(
+                  color: Colors.white,
+                  fontSize: 20,
+                  fontWeight: FontWeight.bold,
+                ),
+              ),
+              const SizedBox(height: 8),
+              _buildProfileDetailRow(Icons.directions_bus, 'Bus Plate:', busPlate),
+              _buildProfileDetailRow(Icons.people, 'Capacity:', busCapacity),
+              _buildProfileDetailRow(Icons.alt_route, 'Route:', routeName),
+              _buildProfileDetailRow(
+                documentsApproved ? Icons.check_circle : Icons.warning,
+                'Documents:',
+                documentsApproved ? 'Approved' : 'Pending',
+                valueColor: documentsApproved ? Colors.green : Colors.orange,
+              ),
+              const SizedBox(height: 12),
+              Row(
+                mainAxisAlignment: MainAxisAlignment.end,
+                children: [
+                  ElevatedButton.icon(
+                    onPressed: onboardingComplete && _activeTripId == null ? () {
+                      // Logic to start trip
+                      // This should ideally be handled by the DriverHomeScreen's _startNewTrip
+                      // For now, we'll just navigate to home and let it handle.
+                      GoRouter.of(context).go('/driver/home');
+                    } : null,
+                    icon: const Icon(Icons.play_arrow),
+                    label: const Text('Start Trip'),
+                    style: ElevatedButton.styleFrom(
+                      backgroundColor: const Color(0xFF2ED8C3),
+                      foregroundColor: Colors.black,
+                      shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(8)),
+                    ),
+                  ),
+                ],
+              ),
+            ],
+          ),
+        ),
+      ),
+    );
+  }
+
+  Widget _buildProfileDetailRow(IconData icon, String label, String value, {Color? valueColor}) {
+    return Padding(
+      padding: const EdgeInsets.symmetric(vertical: 4.0),
+      child: Row(
+        children: [
+          Icon(icon, color: Colors.grey[400], size: 18),
+          const SizedBox(width: 8),
+          Text(
+            label,
+            style: GoogleFonts.urbanist(color: Colors.grey[400], fontSize: 14),
+          ),
+          const SizedBox(width: 8),
+          Text(
+            value,
+            style: GoogleFonts.urbanist(color: valueColor ?? Colors.white, fontSize: 14, fontWeight: FontWeight.w500),
+          ),
+        ],
+      ),
+    );
+  }
+
+  Widget _buildAlerts() {
+    if (_driverInfo == null || _driverInfo!.onboardingComplete) return const SizedBox.shrink();
+    // Example alert for incomplete profile
+    return Positioned(
+      top: 10 + 200, // Adjust based on profile card height
+      left: 10,
+      right: 10,
+      child: Card(
+        color: Colors.orange.withOpacity(0.9),
+        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
+        child: Padding(
+          padding: const EdgeInsets.all(12.0),
+          child: Row(
+            children: [
+              const Icon(Icons.warning_amber_rounded, color: Colors.white),
+              const SizedBox(width: 10),
+              Expanded(
+                child: Text(
+                  'Your profile is incomplete. Please complete all sections to start a trip.',
+                  style: GoogleFonts.urbanist(color: Colors.white, fontSize: 14),
+                ),
+              ),
+              TextButton(
+                onPressed: () {
+                  GoRouter.of(context).go('/driver/onboarding?edit=true');
+                },
+                child: Text('Edit Profile', style: GoogleFonts.urbanist(color: Colors.white, fontWeight: FontWeight.bold)),
+              ),
+            ],
+          ),
+        ),
+      ),
     );
   }
 }

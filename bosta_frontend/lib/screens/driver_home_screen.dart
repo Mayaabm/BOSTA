@@ -62,6 +62,7 @@ class _DriverHomeScreenState extends State<DriverHomeScreen> {
     final authService = Provider.of<AuthService>(context, listen: false);
     final authState = authService.currentState;
     final token = authState.token;
+    final onboardingComplete = authService.onboardingComplete; // Get onboarding status
     
     debugPrint("\n=== START NEW TRIP DEBUG ===");
     debugPrint("[_startNewTrip] Token: ${token?.substring(0, 20)}...");
@@ -77,7 +78,7 @@ class _DriverHomeScreenState extends State<DriverHomeScreen> {
     final tripIdToStart = rawProfileData?['active_trip_id']?.toString();
     debugPrint("[_startNewTrip] Trip ID to start: $tripIdToStart");
     debugPrint("[_startNewTrip] Trip ID type: ${tripIdToStart.runtimeType}");
-
+    
     if (token == null || tripIdToStart == null) {
       debugPrint("[_startNewTrip] ERROR: Token is null: ${token == null}, TripID is null: ${tripIdToStart == null}");
       setState(() {
@@ -85,6 +86,16 @@ class _DriverHomeScreenState extends State<DriverHomeScreen> {
         _isLoading = false;
       });
       debugPrint("=== START NEW TRIP DEBUG (FAILED) ===");
+      return;
+    }
+
+    // Block "Start Trip" if onboarding is not complete
+    if (!onboardingComplete) {
+      setState(() {
+        _errorMessage = "Please complete your profile setup before starting a trip.";
+        _isLoading = false;
+      });
+      debugPrint("=== START NEW TRIP DEBUG (FAILED - Onboarding Incomplete) ===");
       return;
     }
 
@@ -132,8 +143,9 @@ class _DriverHomeScreenState extends State<DriverHomeScreen> {
 
   void _changeSetup() {
     // Navigate to the onboarding screen, which will now serve as the "edit setup" screen.
-    debugPrint("Navigating to onboarding to change setup.");
-    GoRouter.of(context).go('/driver/onboarding');
+    // We pass a query parameter to let the onboarding screen know it's an edit.
+    debugPrint("Navigating to onboarding to change setup (edit mode).");
+    GoRouter.of(context).go('/driver/onboarding?edit=true');
   }
 
   /// Compute ETA using the stored driver profile selections (start -> end).
@@ -239,11 +251,12 @@ class _DriverHomeScreenState extends State<DriverHomeScreen> {
                         ),
                       const SizedBox(height: 20),
                       _buildActionButton(
-                        title: 'Change Setup',
+                        title: 'Edit Profile',
                         icon: Icons.edit_location_alt_rounded,
                         onPressed: _changeSetup,
                       ),
                       const SizedBox(height: 12),
+                      // Only show ETA if a route is assigned
                       if (etaString != null)
                         Text('Estimated trip time: $etaString', style: GoogleFonts.urbanist(color: Colors.white70), textAlign: TextAlign.center),
                     ],

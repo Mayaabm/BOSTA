@@ -1,20 +1,23 @@
 import 'dart:convert';
 import 'package:http/http.dart' as http;
 import '../models/bus.dart';
-import '../models/eta_response.dart';
 import '../models/user_location.dart';
+import '../models/trip_suggestion.dart';
 import 'auth_service.dart'; // Import AuthService
 // Import Provider
 import 'api_endpoints.dart';
+import 'package:flutter/foundation.dart';
 
 class BusService {
   /// Fetches detailed information for a single bus, including ETA if location is provided.
   static Future<Bus> getBusDetails(String busId, {UserLocation? userLocation}) async {
+    // Correctly call the busDetails method to get the base URL for the specific bus.
     String url = ApiEndpoints.busDetails(busId);
+
     if (userLocation != null) {
       url += '?lat=${userLocation.latitude}&lon=${userLocation.longitude}';
     }
-    final uri = Uri.parse(url);
+    final Uri uri = Uri.parse(url);
     final response = await http.get(uri);
 
     if (response.statusCode == 200) {
@@ -22,18 +25,6 @@ class BusService {
       return Bus.fromJson(data);
     } else {
       throw Exception('Failed to load details for bus $busId: ${response.body}');
-    }
-  }
-
-  static Future<Bus> getBusById(String busId) async {
-    final uri = Uri.parse(ApiEndpoints.busDetails(busId));
-    final response = await http.get(uri);
-
-    if (response.statusCode == 200) {
-      final data = json.decode(response.body);
-      return Bus.fromJson(data);
-    } else {
-      throw Exception('Failed to load bus with ID $busId: ${response.body}');
     }
   }
 
@@ -45,7 +36,7 @@ class BusService {
     required String token, // Add token parameter
     AuthService? authService, // Make AuthService available
   }) async {
-    final uri = Uri.parse(ApiEndpoints.updateLocation);
+    final uri = Uri.parse('${ApiEndpoints.base}/driver/update-location/'); // Assuming this endpoint
 
     Future<http.Response> doPost(String currentToken) {
       return http.post(
@@ -96,48 +87,36 @@ class BusService {
     }
   }
 
-  /// Fetches all buses assigned to a specific route.
-  static Future<List<Bus>> getBusesForRoute(String routeId) async {
-    final uri = Uri.parse('${ApiEndpoints.busesForRoute}?route_id=$routeId');
-    final response = await http.get(uri);
-
-    if (response.statusCode == 200) {
-      final List<dynamic> data = json.decode(response.body);
-      return data.map((json) => Bus.fromJson(json)).toList();
-    } else {
-      throw Exception('Failed to load buses for route $routeId');
-    }
-  }
-
-  /// Fetches buses that are heading towards a destination.
-  static Future<List<Bus>> getBusesToDestination({required double latitude, required double longitude}) async {
-    final uri = Uri.parse('${ApiEndpoints.busesToDestination}?lat=$latitude&lon=$longitude');
-    final response = await http.get(uri);
-
-    if (response.statusCode == 200) {
-      final List<dynamic> data = json.decode(response.body);
-      return data.map((json) => Bus.fromJson(json)).toList();
-    } else {
-      throw Exception('Failed to load buses to destination');
-    }
-  }
-
-  /// Fetches ETA for a bus to a target location.
-  static Future<EtaResponse> getEta({
-    required String busId,
-    required double targetLat,
-    required double targetLon,
+  /// Finds buses that can serve a trip from a start to an end point.
+  static Future<List<TripSuggestion>> findTripSuggestions({
+    required double startLat,
+    required double startLon,
+    required double endLat,
+    required double endLon,
   }) async {
-    final uri = Uri.parse(
-        '${ApiEndpoints.eta}?bus_id=$busId&target_lat=$targetLat&target_lon=$targetLon');
-    final response = await http.get(uri);
+    final uri = Uri.parse(ApiEndpoints.planTrip).replace(queryParameters: {
+      'start_lat': startLat.toString(),
+      'start_lon': startLon.toString(),
+      'end_lat': endLat.toString(),
+      'end_lon': endLon.toString(),
+    });
 
-    if (response.statusCode == 200) {
-      final data = json.decode(response.body);
-      return EtaResponse.fromJson(data);
-    } else {
-      throw Exception(
-          'Failed to get ETA for bus $busId: ${response.statusCode} ${response.body}');
+    try {
+      final response = await http.get(uri);
+      if (response.statusCode == 200) {
+        // The endpoint returns a list of suggestions, where each suggestion is a list of legs.
+        final List<dynamic> suggestionsJson = json.decode(response.body);
+        return suggestionsJson
+            .map((suggestionJson) =>
+                TripSuggestion.fromJson(suggestionJson as List<dynamic>))
+            .toList();
+      } else {
+        debugPrint(
+            'BusService.findTripSuggestions failed with status ${response.statusCode}: ${response.body}');
+      }
+    } catch (e) {
+      debugPrint('BusService.findTripSuggestions Exception: $e');
     }
+    return [];
   }
 }

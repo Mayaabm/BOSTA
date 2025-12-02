@@ -2,14 +2,12 @@ import 'dart:async';
 import 'dart:convert';
 import 'package:flutter/cupertino.dart';
 import 'package:flutter/material.dart';
-import 'package:flutter_typeahead/flutter_typeahead.dart';
 import 'package:flutter/foundation.dart'; // For kDebugMode
 import 'package:flutter_map/flutter_map.dart';
 // Import for kDebugMode
-import 'package:bosta_frontend/models/place.dart';
 import 'package:bosta_frontend/models/user_location.dart';
+import 'package:bosta_frontend/screens/where_to_search_bar.dart';
 import 'package:geolocator/geolocator.dart';
-import 'package:bosta_frontend/services/geocoding_service.dart';
 import 'package:google_fonts/google_fonts.dart';
 import 'package:latlong2/latlong.dart';
 import 'package:sliding_up_panel/sliding_up_panel.dart';
@@ -18,6 +16,7 @@ import 'package:provider/provider.dart';
 import '../models/bus.dart'; // Using the actual model
 import '../services/api_endpoints.dart';
 import '../models/app_route.dart'; // Using the unified route model
+import '../models/trip_suggestion.dart';
 import '../services/bus_service.dart'; // Using the actual service
 import '../services/auth_service.dart'; // For getting auth token
 // Using the actual service
@@ -49,7 +48,7 @@ class _RiderHomeScreenState extends State<RiderHomeScreen> with TickerProviderSt
   // bool _isNearRoute = false; // No longer needed, we fetch based on location
 
   RiderView _currentView = RiderView.planTrip;
-  final List<Bus> _suggestedBuses = []; // For trip planning
+  List<TripSuggestion> _tripSuggestions = []; // For trip planning
   Bus? _selectedBus;
   Timer? _selectedBusDetailsTimer;
   bool _isAutoCentering = false;
@@ -60,7 +59,6 @@ class _RiderHomeScreenState extends State<RiderHomeScreen> with TickerProviderSt
   late final AnimationController _markerAnimationController;
 
   // Search controllers
-  final TextEditingController _destinationController = TextEditingController();
   Animation<LatLng>? _markerAnimation;
 
   @override
@@ -85,7 +83,6 @@ class _RiderHomeScreenState extends State<RiderHomeScreen> with TickerProviderSt
     _mockLocationPollTimer?.cancel();
     _markerAnimationController.dispose();
     _pulseController.dispose();
-    _destinationController.dispose();
     super.dispose();
   }
 
@@ -336,6 +333,29 @@ class _RiderHomeScreenState extends State<RiderHomeScreen> with TickerProviderSt
       debugPrint("Could not fetch route for selected bus $busId: $e");
     }
   }
+
+  /// Fetches suggested buses for a trip to the given destination.
+  Future<void> _findBusesTo(LatLng destination) async {
+    if (_currentPosition == null) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(content: Text("Could not determine your current location.")),
+      );
+      return;
+    }
+
+    // Show a loading indicator or message
+    ScaffoldMessenger.of(context).showSnackBar(
+      const SnackBar(content: Text("Finding the best route...")),
+    );
+
+    final suggestions = await BusService.findTripSuggestions(
+      startLat: _currentPosition!.latitude,
+      startLon: _currentPosition!.longitude,
+      endLat: destination.latitude,
+      endLon: destination.longitude,
+    );
+    setState(() => _tripSuggestions = suggestions);
+  }
   // --- UI Build Method ---
   @override
   Widget build(BuildContext context) {
@@ -357,7 +377,7 @@ class _RiderHomeScreenState extends State<RiderHomeScreen> with TickerProviderSt
         panelBuilder: (sc) => BusBottomSheet(
           scrollController: sc,
           currentView: _currentView,
-          suggestedBuses: _suggestedBuses,
+          suggestedBuses: const [], // This needs to be adapted for TripSuggestion
           nearbyBuses: _busesOnRoute, // Show buses from Route 224 in the panel
           onBusSelected: (bus) {
             // When a bus is tapped in the list, treat it like a map marker tap.
@@ -608,55 +628,15 @@ class _RiderHomeScreenState extends State<RiderHomeScreen> with TickerProviderSt
                 ],
               ),
             const SizedBox(height: 8),
-            TypeAheadField<Place>(
-              controller: _destinationController,
-              suggestionsCallback: (pattern) async {
-                // Call our new geocoding service
-                return await GeocodingService.searchPlaces(
-                  pattern,
-                  proximity: _currentPosition != null
-                      ? LatLng(_currentPosition!.latitude, _currentPosition!.longitude)
-                      : null,
-                );
-              },
-              itemBuilder: (context, suggestion) {
-                return ListTile(
-                  leading: const Icon(Icons.location_on_outlined),
-                  title: Text(suggestion.name),
-                  subtitle: Text(suggestion.address, maxLines: 1, overflow: TextOverflow.ellipsis),
-                );
-              },
-              onSelected: (suggestion) {
-                _destinationController.text = suggestion.name;
-                // Here you would trigger the logic to find buses to the destination
-                debugPrint("Destination selected: ${suggestion.name} at ${suggestion.coordinates}");
-                // Example: _findBusesTo(suggestion.coordinates);
-              },
-              decorationBuilder: (context, child) {
-                return Material(
-                  type: MaterialType.card,
-                  elevation: 4.0,
-                  borderRadius: BorderRadius.circular(30.0),
-                  child: child,
-                );
-              },
-              builder: (context, controller, focusNode) {
-                return TextField(
-                  controller: controller,
-                  focusNode: focusNode,
-                  autofocus: false,
-                  decoration: InputDecoration(
-                    prefixIcon: const Icon(Icons.search, color: Color(0xFF2ED8C3)),
-                    hintText: 'Where to?',
-                    filled: true,
-                    fillColor: const Color(0xFF1F2327),
-                    contentPadding: const EdgeInsets.symmetric(horizontal: 20, vertical: 15),
-                    border: OutlineInputBorder(
-                      borderRadius: BorderRadius.circular(30.0),
-                      borderSide: BorderSide.none,
-                    ),
-                  ),
-                );
+            WhereToSearchBar(
+              userLocation: _currentPosition != null
+                  ? LatLng(_currentPosition!.latitude, _currentPosition!.longitude)
+                  : null,
+              onDestinationSelected: (result) {
+                debugPrint("Destination selected: ${result.name} at ${result.latitude}, ${result.longitude}");
+                _findBusesTo(LatLng(result.latitude, result.longitude));
+                // The panel will automatically update with the new _tripSuggestions list.
+                _panelController.open(); // Open the panel to show the results.
               },
             ),
             const SizedBox(height: 16), // Spacing between search bar and segmented control

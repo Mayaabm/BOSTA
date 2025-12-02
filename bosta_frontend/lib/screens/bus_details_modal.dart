@@ -65,7 +65,7 @@ class _BusDetailsModalState extends State<BusDetailsModal> {
       String? etaFromDriver;
       double? distanceFromDriver;
       
-      if (widget.userLocation != null && widget.authToken != null && bus.latitude != null && bus.longitude != null) {
+      if (widget.userLocation != null && widget.authToken != null) {
         try {
           debugPrint('[BusDetailsModal] Fetching ETA from driver to rider...');
           debugPrint('[BusDetailsModal] Driver position: LAT=${bus.latitude}, LON=${bus.longitude}');

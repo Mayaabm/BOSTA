@@ -7,6 +7,7 @@ import 'package:google_fonts/google_fonts.dart';
 import 'package:latlong2/latlong.dart';
 import 'package:sliding_up_panel/sliding_up_panel.dart';
 
+import '../../../models/trip_suggestion.dart';
 import '../../../models/bus.dart';
 import '../../../services/bus_service.dart';
 import 'rider_home_screen.dart' show RiderView; // Import only the enum
@@ -29,7 +30,7 @@ class _RiderHomeScreenState extends State<RiderHomeScreen> with TickerProviderSt
 
   RiderView _currentView = RiderView.planTrip;
   List<Bus> _nearbyBuses = [];
-  List<Bus> _suggestedBuses = [];
+  List<TripSuggestion> _tripSuggestions = []; // Updated to use the new model
   Bus? _selectedBus;
 
   // Animation for bus markers
@@ -123,13 +124,15 @@ class _RiderHomeScreenState extends State<RiderHomeScreen> with TickerProviderSt
     const double destinationLon = 35.6489; 
 
     try {
-      final buses = await BusService.getBusesToDestination( // Using the available service method
-        latitude: destinationLat,
-        longitude: destinationLon,
+      final suggestions = await BusService.findTripSuggestions(
+        startLat: _currentPosition!.latitude,
+        startLon: _currentPosition!.longitude,
+        endLat: destinationLat,
+        endLon: destinationLon,
       );
       if (mounted) {
         setState(() {
-          _suggestedBuses = buses;
+          _tripSuggestions = suggestions;
         });
         _panelController.open();
       }
@@ -178,7 +181,7 @@ class _RiderHomeScreenState extends State<RiderHomeScreen> with TickerProviderSt
         panelBuilder: (sc) => BusBottomSheet(
           scrollController: sc,
           currentView: _currentView,
-          suggestedBuses: _suggestedBuses,
+          suggestedBuses: const [], // This needs to be adapted for TripSuggestion
           nearbyBuses: _nearbyBuses,
           onBusSelected: _onBusSelected,
         ),
