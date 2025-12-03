@@ -3,9 +3,10 @@ import 'package:latlong2/latlong.dart';
 class RouteStop {
   final String id;
   final int? order;
+  final String name;
   final LatLng location;
 
-  RouteStop({required this.id, this.order, required this.location});
+  RouteStop({required this.id, this.order, required this.name, required this.location});
 
   factory RouteStop.fromJson(Map<String, dynamic> json) {
     // Expecting {"id":..., "order":..., "location": {"type":"Point","coordinates":[lon, lat]}}
@@ -19,6 +20,7 @@ class RouteStop {
     return RouteStop(
       id: json['id'].toString(),
       order: json['order'] != null ? int.tryParse(json['order'].toString()) : null,
+      name: json['name'] as String? ?? 'Unnamed Stop',
       location: LatLng(lat, lng),
     );
   }

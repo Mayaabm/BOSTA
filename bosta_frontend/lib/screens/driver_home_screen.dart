@@ -1,9 +1,11 @@
 import 'package:flutter/material.dart';
 import 'package:go_router/go_router.dart';
+import 'package:bosta_frontend/models/app_route.dart';
 import 'package:google_fonts/google_fonts.dart';
 import 'package:provider/provider.dart';
 import '../services/auth_service.dart';
 import '../services/trip_service.dart';
+import 'package:intl/intl.dart';
 import 'package:latlong2/latlong.dart' as fm;
 
 class DriverHomeScreen extends StatefulWidget {
@@ -16,46 +18,7 @@ class DriverHomeScreen extends StatefulWidget {
 class _DriverHomeScreenState extends State<DriverHomeScreen> {
   bool _isLoading = false;
   String? _errorMessage;
-  String? _activeTripId; // To hold the active trip ID if one exists
-
-  @override
-  void initState() {
-    super.initState();
-    // When the screen loads, check for an active trip.
-    _checkForActiveTrip();
-  }
-
-  Future<void> _checkForActiveTrip() async {
-    setState(() => _isLoading = true);
-    final authService = Provider.of<AuthService>(context, listen: false);
-    final token = authService.currentState.token;
-
-    if (token == null) {
-      setState(() {
-        _errorMessage = "Authentication error. Please log in again.";
-        _isLoading = false;
-      });
-      return;
-    }
-
-    try {
-      // This is a new service method we'll need to create.
-      final tripId = await TripService.checkForActiveTrip(token);
-      if (mounted) {
-        setState(() {
-          _activeTripId = tripId;
-          _isLoading = false;
-        });
-      }
-    } catch (e) {
-      if (mounted) {
-        setState(() {
-          _errorMessage = "Failed to check for active trip: $e";
-          _isLoading = false;
-        });
-      }
-    }
-  }
+  String? _activeTripId;
 
   Future<void> _startNewTrip() async {
     setState(() => _isLoading = true);
@@ -71,11 +34,13 @@ class _DriverHomeScreenState extends State<DriverHomeScreen> {
     // The trip is created during onboarding. We need its ID to start it.
     // The backend sends 'active_trip_id' at the top level of the profile response.
     // We need to access it from the raw data stored in the auth service.
-    final rawProfileData = authService.rawDriverProfile;
-    debugPrint("[_startNewTrip] Raw profile data: $rawProfileData");
-    debugPrint("[_startNewTrip] Raw profile keys: ${rawProfileData?.keys.toList()}");
-    
-    final tripIdToStart = rawProfileData?['active_trip_id']?.toString();
+    final rawProfileData = authService.rawDriverProfile;    
+    // --- THE FIX ---
+    // The 'active_trip_id' is only present if the trip is already "in_progress".
+    // When a trip is first created via setup, its ID is captured in `lastCreatedTripId`.
+    // We must prioritize that ID, then fall back to the one from the raw profile.
+    final tripIdToStart = authService.lastCreatedTripId ?? rawProfileData?['active_trip_id']?.toString();
+
     debugPrint("[_startNewTrip] Trip ID to start: $tripIdToStart");
     debugPrint("[_startNewTrip] Trip ID type: ${tripIdToStart.runtimeType}");
     
@@ -132,20 +97,64 @@ class _DriverHomeScreenState extends State<DriverHomeScreen> {
     }
   }
 
-  void _resumeTrip() {
-    // If resuming, we now ensure the trip is started on the backend first,
-    // then navigate. The logic for starting is now consolidated in _startNewTrip.
-    // If the trip is already started, the service will handle it gracefully.
-    // We now call _startNewTrip which will handle the navigation on success.
-    // This is the correct fix from the previous step.
-    _startNewTrip(); 
-  }
+  Future<void> _showChangeRouteDialog() async {
+    final authService = Provider.of<AuthService>(context, listen: false);
+    // Show a loading indicator while fetching routes
+    showDialog(
+      context: context,
+      barrierDismissible: false,
+      builder: (context) => const Center(child: CircularProgressIndicator()),
+    );
 
-  void _changeSetup() {
-    // Navigate to the onboarding screen, which will now serve as the "edit setup" screen.
-    // We pass a query parameter to let the onboarding screen know it's an edit.
-    debugPrint("Navigating to onboarding to change setup (edit mode).");
-    GoRouter.of(context).go('/driver/onboarding?edit=true');
+    final routes = await authService.fetchAllRoutes();
+    Navigator.of(context).pop(); // Dismiss loading indicator
+
+    if (!mounted) return;
+
+    if (routes.isEmpty) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(content: Text("Could not load routes. Please try again later.")),
+      );
+      return;
+    }
+
+    final selectedRoute = await showDialog<AppRoute>(
+      context: context,
+      builder: (context) {
+        return AlertDialog(
+          backgroundColor: const Color(0xFF1F2327),
+          title: Text('Select a Route', style: GoogleFonts.urbanist(color: Colors.white)),
+          content: SizedBox(
+            width: double.maxFinite,
+            child: ListView.builder(
+              shrinkWrap: true,
+              itemCount: routes.length,
+              itemBuilder: (context, index) {
+                final route = routes[index];
+                return ListTile(
+                  title: Text(route.name, style: GoogleFonts.urbanist(color: Colors.white)),
+                  onTap: () => Navigator.of(context).pop(route),
+                );
+              },
+            ),
+          ),
+          actions: [
+            TextButton(
+              onPressed: () => Navigator.of(context).pop(),
+              child: const Text('Cancel'),
+            ),
+          ],
+        );
+      },
+    );
+
+    if (selectedRoute != null) {
+      // The backend needs a way to associate the driver with the new route.
+      // We'll use patchDriverProfile for this.
+      setState(() => _isLoading = true);
+      await authService.patchDriverProfile({'route_id': selectedRoute.id});
+      if (mounted) setState(() => _isLoading = false);
+    }
   }
 
   /// Compute ETA using the stored driver profile selections (start -> end).
@@ -196,21 +205,39 @@ class _DriverHomeScreenState extends State<DriverHomeScreen> {
   @override
   Widget build(BuildContext context) {
     final authService = Provider.of<AuthService>(context);
-    final driverName = authService.currentState.driverInfo?.firstName ?? 'Driver';
-    final etaString = _etaFromProfile();
+    final authState = authService.currentState;
+    final driverInfo = authState.driverInfo;
+    final assignedRoute = authState.assignedRoute;
+    final driverName = driverInfo?.firstName ?? 'Driver';
+
+    // Check for an active trip using the raw profile data from the backend
+    final bool hasActiveTrip = authService.rawDriverProfile?['active_trip_id'] != null;
+
+    // Log the raw profile on every build to check the active_trip_id status
+    debugPrint("[DriverHomeScreen] build(): Checking raw profile. active_trip_id is: ${authService.rawDriverProfile?['active_trip_id']}");
+
+    // Format the start time for display
+    String formattedStartTime = 'Not set';
+    if (authState.selectedStartTime != null) {
+      try {
+        final dateTime = DateTime.parse(authState.selectedStartTime!);
+        formattedStartTime = DateFormat.jm().format(dateTime); // e.g., 5:30 PM
+      } catch (e) {
+        // Handle potential parsing error
+      }
+    }
 
     return Scaffold(
       backgroundColor: const Color(0xFF12161A),
       appBar: AppBar(
-        title: Text('Welcome, $driverName'),
+        title: Text('Driver Home', style: GoogleFonts.urbanist(fontWeight: FontWeight.bold)),
         backgroundColor: const Color(0xFF1F2327),
+        foregroundColor: Colors.white,
         actions: [
           IconButton(
-            icon: const Icon(Icons.settings),
-            tooltip: 'Server Settings',
-            onPressed: () {
-              GoRouter.of(context).push('/settings/server');
-            },
+            icon: const Icon(Icons.edit_note),
+            tooltip: 'Edit Profile',
+            onPressed: () => GoRouter.of(context).go('/driver/onboarding?edit=true'),
           ),
           IconButton(
             icon: const Icon(Icons.logout),
@@ -224,60 +251,98 @@ class _DriverHomeScreenState extends State<DriverHomeScreen> {
       body: _isLoading
           ? const Center(child: CircularProgressIndicator())
           : SingleChildScrollView(
-              child: Padding(
-                padding: const EdgeInsets.all(24.0),
-                child: Center(
-                  child: Column(
-                    mainAxisAlignment: MainAxisAlignment.center,
-                    crossAxisAlignment: CrossAxisAlignment.stretch,
-                    children: [
-                      if (_errorMessage != null) ...[
-                        Text(_errorMessage!, style: const TextStyle(color: Colors.red), textAlign: TextAlign.center),
-                        const SizedBox(height: 16),
-                      ],
-                      if (_activeTripId != null)
-                        _buildActionButton(
-                          title: 'Resume Active Trip',
-                          icon: Icons.play_arrow_rounded,
-                          onPressed: _resumeTrip,
-                          isPrimary: true,
-                        )
-                      else
-                        _buildActionButton(
-                          title: 'Start New Trip',
-                          icon: Icons.play_circle_fill_rounded,
-                          onPressed: _startNewTrip,
-                          isPrimary: true,
-                        ),
-                      const SizedBox(height: 20),
-                      _buildActionButton(
-                        title: 'Edit Profile',
-                        icon: Icons.edit_location_alt_rounded,
-                        onPressed: _changeSetup,
-                      ),
-                      const SizedBox(height: 12),
-                      // Only show ETA if a route is assigned
-                      if (etaString != null)
-                        Text('Estimated trip time: $etaString', style: GoogleFonts.urbanist(color: Colors.white70), textAlign: TextAlign.center),
-                    ],
+              padding: const EdgeInsets.all(24.0),
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.stretch,
+                children: [
+                  // Welcome Header
+                  Text(
+                    'Welcome, $driverName!',
+                    textAlign: TextAlign.center,
+                    style: GoogleFonts.urbanist(fontSize: 32, fontWeight: FontWeight.bold, color: Colors.white),
                   ),
-                ),
+                  const SizedBox(height: 10),
+                  Text(
+                    hasActiveTrip ? 'You have an ongoing trip.' : 'Ready to start your next trip?',
+                    textAlign: TextAlign.center,
+                    style: GoogleFonts.urbanist(fontSize: 16, color: Colors.grey[400]),
+                  ),
+                  const SizedBox(height: 40),
+
+                  // Trip Information Card
+                  Card(
+                    color: const Color(0xFF1F2327),
+                    shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
+                    child: Padding(
+                      padding: const EdgeInsets.all(20.0),
+                      child: Column(
+                        crossAxisAlignment: CrossAxisAlignment.start,
+                        children: [
+                          Text(
+                            hasActiveTrip ? 'Active Trip' : 'Next Trip Details',
+                            style: GoogleFonts.urbanist(fontSize: 22, fontWeight: FontWeight.bold, color: Colors.white),
+                          ),
+                          const Divider(color: Colors.grey, height: 20),
+                          _buildInfoRow(
+                            Icons.route_outlined,
+                            'Route',
+                            assignedRoute?.name ?? 'Not Assigned',
+                            trailing: TextButton(onPressed: _showChangeRouteDialog, child: const Text('Change')),
+                          ),
+                          const SizedBox(height: 12),
+                          _buildInfoRow(Icons.schedule_outlined, 'Scheduled Start', formattedStartTime),
+                          const SizedBox(height: 12),
+                          _buildInfoRow(Icons.pin_drop_outlined, 'Starting Point', authState.selectedStopId != null ? 'Stop #${authState.selectedStopId}' : 'Not Set'),
+                        ],
+                      ),
+                    ),
+                  ),
+                  const SizedBox(height: 40),
+
+                  // Error Message
+                  if (_errorMessage != null) ...[
+                    Text(_errorMessage!, style: const TextStyle(color: Colors.red), textAlign: TextAlign.center),
+                    const SizedBox(height: 16),
+                  ],
+
+                  // Action Button
+                  ElevatedButton.icon(
+                    icon: Icon(hasActiveTrip ? Icons.map_outlined : Icons.play_arrow_rounded, color: Colors.black),
+                    label: Text(
+                      hasActiveTrip ? 'View Dashboard' : 'Start Trip',
+                      style: GoogleFonts.urbanist(fontSize: 18, fontWeight: FontWeight.bold, color: Colors.black),
+                    ),
+                    onPressed: _startNewTrip,
+                    style: ElevatedButton.styleFrom(
+                      backgroundColor: const Color(0xFF2ED8C3),
+                      padding: const EdgeInsets.symmetric(vertical: 16),
+                      shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
+                    ),
+                  ),
+                ],
               ),
       ),
     );
   }
-
-  Widget _buildActionButton({required String title, required IconData icon, required VoidCallback onPressed, bool isPrimary = false}) {
-    return ElevatedButton.icon(
-      icon: Icon(icon, size: 24),
-      label: Text(title, style: GoogleFonts.urbanist(fontSize: 18, fontWeight: FontWeight.bold)),
-      onPressed: onPressed,
-      style: ElevatedButton.styleFrom(
-        backgroundColor: isPrimary ? const Color(0xFF2ED8C3) : const Color(0xFF1F2327),
-        foregroundColor: isPrimary ? Colors.black : Colors.white,
-        padding: const EdgeInsets.symmetric(vertical: 20),
-        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
-      ),
+  Widget _buildInfoRow(IconData icon, String label, String value, {Widget? trailing}) {
+    return Row(
+      children: [
+        Icon(icon, color: const Color(0xFF2ED8C3), size: 20),
+        const SizedBox(width: 12),
+        Text(
+          '$label: ',
+          style: GoogleFonts.urbanist(fontSize: 16, color: Colors.grey[400]),
+        ),
+        Expanded(
+          child: Text(
+            value,
+            textAlign: TextAlign.end,
+            style: GoogleFonts.urbanist(fontSize: 16, fontWeight: FontWeight.bold, color: Colors.white),
+            overflow: TextOverflow.ellipsis,
+          ),
+        ),
+        if (trailing != null) ...[const SizedBox(width: 8), trailing],
+      ],
     );
   }
 }

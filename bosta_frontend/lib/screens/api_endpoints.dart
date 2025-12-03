@@ -13,6 +13,10 @@ class ApiEndpoints {
   static const String driverProfile = '$baseUrl/driver/me/';
   static const String driverOnboard = '$baseUrl/driver/onboard/';
 
+  // Trip management
+  static String startTrip(String tripId) => '$baseUrl/trips/$tripId/start/';
+  static String endTrip(String tripId) => '$baseUrl/trips/$tripId/end/';
+
   // Rider & Buses
   static const String nearbyBuses = '$baseUrl/buses/nearby/';
   static const String busDetails = '$baseUrl/buses'; // e.g., /api/buses/1/
@@ -21,4 +25,8 @@ class ApiEndpoints {
   // Search
   static const String searchStops = '$baseUrl/stops/';
   static const String devRiderLocation = 'http://10.0.2.2:8000/dev/rider-location/';
+
+  // New endpoint for fetching all routes
+  static const String allRoutes = '$baseUrl/routes/';
+  static const String eta = '$baseUrl/trips/eta/';
 }
