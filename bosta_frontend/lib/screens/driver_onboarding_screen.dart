@@ -16,7 +16,6 @@ class DriverOnboardingScreen extends StatefulWidget {
 class _DriverOnboardingScreenState extends State<DriverOnboardingScreen> {
   // Separate form keys for each section
   final _personalInfoFormKey = GlobalKey<FormState>();
-  final _tripSetupFormKey = GlobalKey<FormState>();
   final _vehicleInfoFormKey = GlobalKey<FormState>();
   final _firstNameController = TextEditingController();
   final _lastNameController = TextEditingController();
@@ -30,15 +29,9 @@ class _DriverOnboardingScreenState extends State<DriverOnboardingScreen> {
   // Loading states for individual sections
   bool _isSavingPersonalInfo = false;
   bool _isSavingVehicleInfo = false;
-  bool _isSavingTripInfo = false;
 
   // Track if we are in edit mode (from query params)
   bool _isEditMode = false;
-
-  // State for Trip Setup
-  String? _selectedStartStopId;
-  String? _selectedEndStopId;
-  TimeOfDay? _selectedTime;
   AppRoute? _assignedRoute;
 
   @override
@@ -85,16 +78,6 @@ class _DriverOnboardingScreenState extends State<DriverOnboardingScreen> {
       _busPlateController.text = driverInfo.busPlateNumber ?? '';
       _busCapacityController.text = driverInfo.busCapacity?.toString() ?? '';
     }
-
-    // Load trip setup data
-    _selectedStartStopId = authState.selectedStopId;
-    _selectedEndStopId = authState.selectedEndStopId;
-    if (authState.selectedStartTime != null) {
-      try {
-        final dateTime = DateTime.parse(authState.selectedStartTime!);
-        _selectedTime = TimeOfDay.fromDateTime(dateTime);
-      } catch (_) {}
-    }
   }
 
   Future<void> _submitPersonalInfo() async {
@@ -132,55 +115,6 @@ class _DriverOnboardingScreenState extends State<DriverOnboardingScreen> {
       });
       if (error == null) {
         ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('Vehicle info saved!')));
-      }
-    }
-  }
-
-  Future<void> _submitTripInfo() async {
-    if (!_tripSetupFormKey.currentState!.validate()) return;
-    if (_selectedTime == null) {
-      ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('Please select a start time.')));
-      return;
-    }
-
-    setState(() => _isSavingTripInfo = true);
-
-    final now = DateTime.now();
-    final startTime = DateTime(now.year, now.month, now.day, _selectedTime!.hour, _selectedTime!.minute);
-
-    final tripData = {
-      'start_stop_id': _selectedStartStopId,
-      'end_stop_id': _selectedEndStopId,
-      'start_time': startTime.toIso8601String(),
-    };
-    debugPrint("[OnboardingScreen] _submitTripInfo: Saving trip data: $tripData");
-
-    // We will use setupDriverProfile here. Even though it's an "edit", the backend
-    // seems to use this endpoint to create a new trip for the day, which is what we need.
-    // We'll pass all available driver info to ensure the profile remains complete.
-    final authService = Provider.of<AuthService>(context, listen: false);
-    final error = await authService.setupDriverProfile(
-      firstName: _firstNameController.text,
-      lastName: _lastNameController.text,
-      phoneNumber: _phoneController.text,
-      busPlateNumber: _busPlateController.text,
-      busCapacity: int.tryParse(_busCapacityController.text) ?? 0,
-      // Pass the new trip setup details
-      startStopId: _selectedStartStopId,
-      endStopId: _selectedEndStopId,
-      startTime: startTime.toIso8601String(),
-    );
-
-    if (mounted) {
-      setState(() {
-        _isSavingTripInfo = false;
-        _generalErrorMessage = error;
-      });
-      if (error == null) {
-        debugPrint("[OnboardingScreen] _submitTripInfo: Successfully saved trip details and re-fetched profile.");
-        ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('Trip details saved!')));
-      } else {
-        debugPrint("[OnboardingScreen] _submitTripInfo: FAILED. Error from authService: $error");
       }
     }
   }
@@ -310,23 +244,6 @@ class _DriverOnboardingScreenState extends State<DriverOnboardingScreen> {
               ),
               const SizedBox(height: 20),
 
-              // Trip Setup Section (only in edit mode)
-              if (_isEditMode)
-                _buildSection(
-                  title: 'Trip Setup',
-                  formKey: _tripSetupFormKey,
-                  children: [
-                    _buildStopDropdown(_assignedRoute?.stops ?? [], 'Start Stop', _selectedStartStopId, (val) => setState(() => _selectedStartStopId = val)),
-                    const SizedBox(height: 16),
-                    _buildStopDropdown(_assignedRoute?.stops ?? [], 'End Stop', _selectedEndStopId, (val) => setState(() => _selectedEndStopId = val)),
-                    const SizedBox(height: 16),
-                    _buildTimePicker('Start Time'),
-                  ],
-                  onSave: _submitTripInfo,
-                  isSaving: _isSavingTripInfo,
-                  initiallyExpanded: true,
-                ),
-
               // Personal Information Section
               _buildSection(
                 title: 'Personal Information',
@@ -415,64 +332,6 @@ class _DriverOnboardingScreenState extends State<DriverOnboardingScreen> {
         _generalErrorMessage!,
         style: const TextStyle(color: Colors.red, fontSize: 14),
         textAlign: TextAlign.center,
-      ),
-    );
-  }
-
-  Widget _buildStopDropdown(List<RouteStop> stops, String label, String? currentValue, ValueChanged<String?> onChanged) {
-    if (stops.isEmpty) {
-      return Text('No stops available for this route.', style: TextStyle(color: Colors.grey[400]));
-    }
-    return DropdownButtonFormField<String>(
-      value: currentValue,
-      onChanged: onChanged,
-      items: stops.map((stop) {
-        return DropdownMenuItem<String>(
-          value: stop.id,
-          child: Text('Stop ${stop.order}: ${stop.name}', style: GoogleFonts.urbanist(color: Colors.white)),
-        );
-      }).toList(),
-      decoration: InputDecoration(
-        labelText: label,
-        labelStyle: TextStyle(color: Colors.grey[400]),
-        filled: true,
-        fillColor: const Color(0xFF1F2327),
-        border: OutlineInputBorder(borderRadius: BorderRadius.circular(12), borderSide: BorderSide.none),
-      ),
-      dropdownColor: const Color(0xFF1F2327),
-      validator: (value) => value == null ? '$label is required' : null,
-    );
-  }
-
-  Widget _buildTimePicker(String label) {
-    return InkWell(
-      onTap: () async {
-        final TimeOfDay? picked = await showTimePicker(
-          context: context,
-          initialTime: _selectedTime ?? TimeOfDay.now(),
-        );
-        if (picked != null && picked != _selectedTime) {
-          setState(() {
-            _selectedTime = picked;
-          });
-        }
-      },
-      child: InputDecorator(
-        decoration: InputDecoration(
-          labelText: label,
-          labelStyle: TextStyle(color: Colors.grey[400]),
-          prefixIcon: Icon(Icons.schedule_outlined, color: Colors.grey[400]),
-          filled: true,
-          fillColor: const Color(0xFF1F2327),
-          border: OutlineInputBorder(borderRadius: BorderRadius.circular(12), borderSide: BorderSide.none),
-        ),
-        child: Text(
-          _selectedTime?.format(context) ?? 'Select a time',
-          style: GoogleFonts.urbanist(
-            color: _selectedTime != null ? Colors.white : Colors.grey[500],
-            fontSize: 16,
-          ),
-        ),
       ),
     );
   }

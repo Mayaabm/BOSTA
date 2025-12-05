@@ -15,7 +15,8 @@ import 'package:latlong2/latlong.dart' as fm;
 import 'package:provider/provider.dart';
 
 class DriverDashboardScreen extends StatefulWidget {
-  const DriverDashboardScreen({super.key});
+  final String? tripId; // Accept tripId from router
+  const DriverDashboardScreen({super.key, this.tripId});
 
   @override
   State<DriverDashboardScreen> createState() => _DriverDashboardScreenState();
@@ -68,6 +69,7 @@ class _DriverDashboardScreenState extends State<DriverDashboardScreen> {
 
   /// Initializes the map, location services, and fetches initial trip data.
   Future<void> _initializeTrip() async {
+    debugPrint("\n\n[DriverDashboard] >>>>>>>>>> INITIALIZING TRIP <<<<<<<<<<");
     if (!mounted) return;
 
     final authState = Provider.of<AuthService>(context, listen: false).currentState;
@@ -76,16 +78,24 @@ class _DriverDashboardScreenState extends State<DriverDashboardScreen> {
         _errorMessage = "Could not load trip data. Please go back and set up the trip again.";
         _isLoading = false;
       });
+      debugPrint("[DriverDashboard] X FAILED: Prerequisite data (route, driverInfo, token, etc.) is missing from AuthState. Aborting.");
       return;
     }
 
-    // Fetch the active trip ID.
-    final tripId = await TripService.checkForActiveTrip(authState.token!);
+    // --- FIX: Prioritize the tripId passed from the router ---
+    // This avoids the race condition where the GET request to /driver/me/
+    // happens before the backend has updated the active_trip_id.
+    debugPrint("[DriverDashboard] 1. DETERMINING TRIP ID...");
+    debugPrint("  > Checking for tripId from router 'extra': ${widget.tripId}");
+    final tripId = widget.tripId ?? await TripService.checkForActiveTrip(authState.token!);
+    debugPrint("  > Final tripId to be used: '$tripId'");
+
     if (tripId == null) {
       setState(() {
         _errorMessage = "No active trip found. Please start a new trip from the onboarding screen.";
         _isLoading = false;
       });
+      debugPrint("[DriverDashboard] X FAILED: Could not determine an active trip ID. Aborting.");
       return;
     }
 
@@ -112,6 +122,7 @@ class _DriverDashboardScreenState extends State<DriverDashboardScreen> {
 
       // Calculate the specific route segment for this trip
       _calculateTripGeometry();
+      debugPrint("[DriverDashboard] 2. STATE INITIALIZED: Set local state with tripId, route, and destination info.");
     });
 
     // Check for location permissions before proceeding.

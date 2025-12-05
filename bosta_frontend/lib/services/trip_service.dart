@@ -34,32 +34,23 @@ class TripService {
 
   /// Starts a new trip based on the driver's saved setup.
   /// Returns the new trip ID on success.
-  Future<String> startNewTrip(String token, {
-    required String tripId, // We need the ID of the trip to start.
+  static Future<String> startNewTrip(String token, {
     String? startStopId,
     String? endStopId,
-    String? startTime,
-    double? startLat,
-    double? startLon,
   }) async {
-    // Correctly build the URL for starting a specific trip.
-    // This was causing the "invocation_of_non_function_expression" error.
-    final uri = Uri.parse(ApiEndpoints.startTrip(tripId));
+    debugPrint("\n[TripService] --- Initiating startNewTrip ---");
+    final uri = Uri.parse(ApiEndpoints.startNewTrip); // Endpoint to create and start a trip
     
-    debugPrint("\n=== TRIP SERVICE DEBUG ===");
-    debugPrint("[TripService.startNewTrip] URI: $uri");
-    debugPrint("[TripService.startNewTrip] Token: ${token.substring(0, 20)}...");
-    debugPrint("[TripService.startNewTrip] Trip ID: $tripId");
+    debugPrint("[TripService] 1. Preparing POST request.");
+    debugPrint("  > Target URI: $uri");
+    debugPrint("  > Auth Token: Bearer ${token.substring(0, 8)}...");
     
     final requestBody = {
       'start_stop_id': startStopId,
       'end_stop_id': endStopId,
-      'start_time': startTime,
-      'start_lat': startLat,
-      'start_lon': startLon,
     };
-    debugPrint("[TripService.startNewTrip] Request body: $requestBody");
-    
+    debugPrint("  > Request Body: ${json.encode(requestBody)}");
+    debugPrint("[TripService] 2. Sending POST request to backend...");
     final response = await http.post(
       uri,
       headers: {
@@ -69,38 +60,30 @@ class TripService {
       body: json.encode(requestBody),
     );
 
-    debugPrint("[TripService.startNewTrip] Response status: ${response.statusCode}");
-    debugPrint("[TripService.startNewTrip] Response body: ${response.body}");
-    debugPrint("[TripService.startNewTrip] Response headers: ${response.headers}");
+    debugPrint("[TripService] 3. Backend response received.");
+    debugPrint("  > HTTP Status: ${response.statusCode}");
+    debugPrint("  > Response Body: ${response.body}");
 
     if (response.statusCode == 201 || response.statusCode == 200) { // 201 Created or 200 OK
+      debugPrint("[TripService] 4. SUCCESS: Status is 200/201. Parsing response body...");
       final data = json.decode(response.body);
-      debugPrint("[TripService.startNewTrip] Parsed response data: $data");
-      debugPrint("[TripService.startNewTrip] Response data keys: ${data.keys.toList()}");
+      debugPrint("  > Parsed JSON data: $data");
       
       final startedTripId = data['trip_id']?.toString();
-      debugPrint("[TripService.startNewTrip] Extracted trip_id: $startedTripId");
+      debugPrint("  > Extracted 'trip_id': $startedTripId");
       
       if (startedTripId != null) {
-        debugPrint("New trip started successfully. Trip ID: $startedTripId");
-        debugPrint("=== TRIP SERVICE DEBUG (SUCCESS) ===");
+        debugPrint("[TripService] 5. SUCCESS: Returning tripId '$startedTripId' to caller.");
         return startedTripId;
       } else {
-        debugPrint("=== TRIP SERVICE DEBUG (FAILED - NO TRIP_ID) ===");
+        debugPrint("[TripService] X FAILED: Response was successful, but 'trip_id' key was not found in the JSON body.");
         throw Exception('Failed to start trip: trip_id not found in response.');
       }
-    } else if (response.statusCode == 400 && response.body.contains('already started')) {
-      // --- FIX: Handle the "Trip already started" case gracefully ---
-      // This is not a true error. It means the trip is active, so we can proceed.
-      // We can just return the tripId that we were trying to start.
-      debugPrint("[TripService.startNewTrip] Handled 400: Trip is already started. Proceeding with tripId: $tripId");
-      debugPrint("=== TRIP SERVICE DEBUG (SUCCESS - ALREADY STARTED) ===");
-      return tripId;
     } else if (response.statusCode == 400) { // Handle other 400 errors
-      debugPrint("=== TRIP SERVICE DEBUG (FAILED - 400) ===");
+      debugPrint("[TripService] X FAILED: Backend returned HTTP 400 (Bad Request).");
       throw Exception('Failed to start trip. Status: 400, Body: ${response.body}');
     } else {
-      debugPrint("=== TRIP SERVICE DEBUG (FAILED - BAD STATUS) ===");
+      debugPrint("[TripService] X FAILED: Backend returned unhandled status ${response.statusCode}.");
       throw Exception('Failed to start trip. Status: ${response.statusCode}, Body: ${response.body}');
     }
   }

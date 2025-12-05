@@ -5,8 +5,6 @@ import 'package:google_fonts/google_fonts.dart';
 import 'package:provider/provider.dart';
 import '../services/auth_service.dart';
 import '../services/trip_service.dart';
-import 'package:intl/intl.dart';
-import 'package:latlong2/latlong.dart' as fm;
 
 class DriverHomeScreen extends StatefulWidget {
   const DriverHomeScreen({super.key});
@@ -18,82 +16,97 @@ class DriverHomeScreen extends StatefulWidget {
 class _DriverHomeScreenState extends State<DriverHomeScreen> {
   bool _isLoading = false;
   String? _errorMessage;
-  String? _activeTripId;
+
+  // Local state to manage dropdown changes and prevent unnecessary rebuilds
+  String? _selectedStartStopId;
+  String? _selectedEndStopId;
+  bool _isSavingTripSetup = false;
 
   Future<void> _startNewTrip() async {
-    setState(() => _isLoading = true);
+    debugPrint("\n\n[DriverHomeScreen] >>>>>>>>>> STARTING 'startNewTrip' PROCESS <<<<<<<<<<");
+    // If a trip is already active, just navigate to the dashboard.
     final authService = Provider.of<AuthService>(context, listen: false);
-    final authState = authService.currentState;
-    final token = authState.token;
-    final onboardingComplete = authService.onboardingComplete; // Get onboarding status
-    
-    debugPrint("\n=== START NEW TRIP DEBUG ===");
-    debugPrint("[_startNewTrip] Token: ${token?.substring(0, 20)}...");
-    debugPrint("[_startNewTrip] Auth state authenticated: ${authState.isAuthenticated}");
-    
-    // The trip is created during onboarding. We need its ID to start it.
-    // The backend sends 'active_trip_id' at the top level of the profile response.
-    // We need to access it from the raw data stored in the auth service.
-    final rawProfileData = authService.rawDriverProfile;    
-    // --- THE FIX ---
-    // The 'active_trip_id' is only present if the trip is already "in_progress".
-    // When a trip is first created via setup, its ID is captured in `lastCreatedTripId`.
-    // We must prioritize that ID, then fall back to the one from the raw profile.
-    final tripIdToStart = authService.lastCreatedTripId ?? rawProfileData?['active_trip_id']?.toString();
-
-    debugPrint("[_startNewTrip] Trip ID to start: $tripIdToStart");
-    debugPrint("[_startNewTrip] Trip ID type: ${tripIdToStart.runtimeType}");
-    
-    if (token == null || tripIdToStart == null) {
-      debugPrint("[_startNewTrip] ERROR: Token is null: ${token == null}, TripID is null: ${tripIdToStart == null}");
-      setState(() {
-        _errorMessage = "Cannot start trip. No active trip found. Please complete your setup.";
-        _isLoading = false;
-      });
-      debugPrint("=== START NEW TRIP DEBUG (FAILED) ===");
+    if (authService.rawDriverProfile?['active_trip_id'] != null) {
+      GoRouter.of(context).go('/driver/dashboard');
       return;
     }
 
-    // Block "Start Trip" if onboarding is not complete
-    if (!onboardingComplete) {
+    setState(() => _isLoading = true);
+    final authState = authService.currentState;
+    final token = authState.token;
+    // --- FIX: Validate based on essential data, not just the onboarding flag ---
+    // The key requirements to start a trip are having a bus and an assigned route.
+    final bool canStartTrip = authState.driverInfo?.busId != null && authState.assignedRoute?.id != null;
+
+    debugPrint("[DriverHomeScreen] 1. PRE-FLIGHT CHECKS...");
+    debugPrint("[_startNewTrip] Current AuthState: isAuthenticated=${authState.isAuthenticated}, role=${authState.role}");
+    debugPrint("[_startNewTrip] Token available: ${token != null}");
+    debugPrint("[_startNewTrip] Onboarding complete flag from backend: ${authState.driverInfo?.onboardingComplete}");
+    debugPrint("[_startNewTrip] Validation 'canStartTrip' (busId & routeId exist): $canStartTrip");
+    debugPrint("[_startNewTrip] Values from AuthState for trip creation:");
+    debugPrint("  > selectedStopId: ${authState.selectedStopId}");
+    debugPrint("  > selectedEndStopId: ${authState.selectedEndStopId}");
+
+    if (token == null) {
+      setState(() {
+        _errorMessage = "Authentication error. Please log in again.";
+        _isLoading = false;
+      });
+      debugPrint("[DriverHomeScreen] X FAILED: Token is null. Aborting.");
+      return;
+    }
+
+    if (!canStartTrip) {
       setState(() {
         _errorMessage = "Please complete your profile setup before starting a trip.";
         _isLoading = false;
       });
-      debugPrint("=== START NEW TRIP DEBUG (FAILED - Onboarding Incomplete) ===");
+      debugPrint("[DriverHomeScreen] X FAILED: 'canStartTrip' is false. Aborting.");
+      return;
+    }
+
+    // --- VALIDATION ---
+    // Ensure both start and end stops are selected before starting.
+    if (authState.selectedStopId == null || authState.selectedEndStopId == null) {
+      setState(() {
+        _errorMessage = "Please select both a start and end stop for your trip.";
+        _isLoading = false;
+      });
+      debugPrint("[DriverHomeScreen] X FAILED: Start or End stop not selected. Aborting.");
       return;
     }
 
     try {
-      debugPrint("[_startNewTrip] Calling TripService.startNewTrip with tripId: $tripIdToStart");
-      // Call the service to start the existing trip on the backend.
-      final newTripId = await TripService().startNewTrip(
-        token,
-        tripId: tripIdToStart, // Pass the correct tripId.
+      debugPrint("[DriverHomeScreen] 2. CALLING SERVICE: All checks passed. Calling AuthService.patchDriverProfile to create the trip...");
+      // --- FIX: Use the correct service method that calls the backend's trip creation endpoint ---
+      // The backend creates a trip via the 'onboard' endpoint when trip details are passed.
+      await authService.patchDriverProfile(
+        {
+          'selected_start_stop_id': authState.selectedStopId,
+          'selected_end_stop_id': authState.selectedEndStopId,
+        },
+        createNewTrip: true, // This flag might be used by the backend to initiate the trip.
       );
 
-      debugPrint("[_startNewTrip] Success! New trip ID: $newTripId");
-      // After creating the trip, update the local state and navigate
-      setState(() {
-        _activeTripId = newTripId;
-        _isLoading = false;
-      });
-      debugPrint("=== START NEW TRIP DEBUG (SUCCESS) ===");
+      // After the patch, the AuthService state is updated, and we can get the new trip ID.
+      // The active_trip_id is now the source of truth after the re-fetch.
+      final newTripId = authService.currentState.rawDriverProfile?['active_trip_id']?.toString();
+      if (newTripId == null) {
+        throw Exception("Trip was created, but no trip_id was returned from the service.");
+      }
+
+      debugPrint("[DriverHomeScreen] 3. SERVICE SUCCEEDED: TripService returned newTripId: '$newTripId'");
       // FIX: Directly navigate to the dashboard instead of calling _resumeTrip,
       // which was causing an infinite loop.
-      debugPrint("[_startNewTrip] Navigating to dashboard to start/resume trip $newTripId.");
-      GoRouter.of(context).go('/driver/dashboard');
+      debugPrint("[DriverHomeScreen] 4. NAVIGATING: Calling GoRouter.go('/driver/dashboard') with tripId as extra.");
+      GoRouter.of(context).go('/driver/dashboard', extra: newTripId);
     } catch (e) {
-      debugPrint("[_startNewTrip] Exception caught: $e");
-      debugPrint("[_startNewTrip] Exception type: ${e.runtimeType}");
-      debugPrint("[_startNewTrip] Stack trace: ${StackTrace.current}");
+      debugPrint("[DriverHomeScreen] X CATASTROPHIC FAILURE: The 'startNewTrip' process threw an exception.");
+      debugPrint("  > Exception: $e");
+      debugPrint("  > Stack Trace: ${StackTrace.current}");
       setState(() {
-        // Log the full error for debugging, but show a user-friendly message.
-        debugPrint("Error starting new trip: $e");
-        _errorMessage = "Failed to start new trip. Error: $e";
         _isLoading = false;
       });
-      debugPrint("=== START NEW TRIP DEBUG (FAILED WITH EXCEPTION) ===");
     }
   }
 
@@ -157,75 +170,50 @@ class _DriverHomeScreenState extends State<DriverHomeScreen> {
     }
   }
 
-  /// Compute ETA using the stored driver profile selections (start -> end).
-  /// Returns a formatted string like '1h 12m', '45 min', or '<1 min'.
-  String? _etaFromProfile({double avgSpeedMps = 10.0}) {
+  // New method to handle saving the trip setup
+  Future<void> _saveTripSetup(String? startStopId, String? endStopId) async {
+    setState(() => _isSavingTripSetup = true);
     final authService = Provider.of<AuthService>(context, listen: false);
-    final state = authService.currentState;
-    final route = state.assignedRoute;   
-    if (route == null) return null;
+    final error = await authService.patchDriverProfile({
+      'selected_start_stop_id': startStopId,
+      'selected_end_stop_id': endStopId,
+    });
 
-    // Resolve start
-    fm.LatLng? startPoint;
-    if (state.selectedStopId != null) {
-      final matches = route.stops.where((s) => s.id == state.selectedStopId).toList();
-      if (matches.isNotEmpty) {
-        final s = matches.first;
-        startPoint = fm.LatLng(s.location.latitude, s.location.longitude);
-      }
+    if (mounted) {
+      setState(() {
+        _isSavingTripSetup = false;
+        if (error != null) {
+          _errorMessage = "Failed to save trip setup: $error";
+        } else {
+          _errorMessage = null; // Clear previous errors on success
+        }
+      });
     }
-    if (startPoint == null && state.selectedStartLat != null && state.selectedStartLon != null) {
-      startPoint = fm.LatLng(state.selectedStartLat!, state.selectedStartLon!);
-    }
+  }
 
-    // Resolve end
-    fm.LatLng? endPoint;
-    if (state.selectedEndStopId != null) {
-      final matches = route.stops.where((s) => s.id == state.selectedEndStopId).toList();
-      if (matches.isNotEmpty) {
-        final e = matches.first;
-        endPoint = fm.LatLng(e.location.latitude, e.location.longitude);
-      }
-    }
-
-    if (startPoint == null || endPoint == null) return null;
-
-    final distMeters = const fm.Distance().as(fm.LengthUnit.Meter, startPoint, endPoint);
-    if (distMeters <= 10) return '<1 min';
-
-    final etaSeconds = distMeters / avgSpeedMps;
-    int totalMinutes = (etaSeconds / 60).round();
-    if (totalMinutes < 1) return '<1 min';
-    final hours = totalMinutes ~/ 60;
-    final minutes = totalMinutes % 60;
-    if (hours > 0) return '${hours}h ${minutes}m';
-    return '$minutes min';
+  @override
+  void didChangeDependencies() {
+    super.didChangeDependencies();
+    // Sync local state with provider state when the screen is built or dependencies change
+    final authState = Provider.of<AuthService>(context, listen: false).currentState;
+    _selectedStartStopId = authState.selectedStopId;
+    _selectedEndStopId = authState.selectedEndStopId;
   }
 
   @override
   Widget build(BuildContext context) {
-    final authService = Provider.of<AuthService>(context);
+    final authService = Provider.of<AuthService>(context); // Listen to changes
     final authState = authService.currentState;
     final driverInfo = authState.driverInfo;
     final assignedRoute = authState.assignedRoute;
     final driverName = driverInfo?.firstName ?? 'Driver';
 
     // Check for an active trip using the raw profile data from the backend
+    // This is the source of truth for whether a trip is "in_progress".
     final bool hasActiveTrip = authService.rawDriverProfile?['active_trip_id'] != null;
 
     // Log the raw profile on every build to check the active_trip_id status
     debugPrint("[DriverHomeScreen] build(): Checking raw profile. active_trip_id is: ${authService.rawDriverProfile?['active_trip_id']}");
-
-    // Format the start time for display
-    String formattedStartTime = 'Not set';
-    if (authState.selectedStartTime != null) {
-      try {
-        final dateTime = DateTime.parse(authState.selectedStartTime!);
-        formattedStartTime = DateFormat.jm().format(dateTime); // e.g., 5:30 PM
-      } catch (e) {
-        // Handle potential parsing error
-      }
-    }
 
     return Scaffold(
       backgroundColor: const Color(0xFF12161A),
@@ -290,9 +278,30 @@ class _DriverHomeScreenState extends State<DriverHomeScreen> {
                             trailing: TextButton(onPressed: _showChangeRouteDialog, child: const Text('Change')),
                           ),
                           const SizedBox(height: 12),
-                          _buildInfoRow(Icons.schedule_outlined, 'Scheduled Start', formattedStartTime),
+                          // Start Stop Dropdown
+                          _buildStopDropdown(
+                            icon: Icons.flag_outlined,
+                            label: 'Start Stop',
+                            stops: assignedRoute?.stops ?? [],
+                            currentValue: _selectedStartStopId,
+                            onChanged: (value) {
+                              setState(() => _selectedStartStopId = value);
+                              _saveTripSetup(value, _selectedEndStopId);
+                            },
+                          ),
                           const SizedBox(height: 12),
-                          _buildInfoRow(Icons.pin_drop_outlined, 'Starting Point', authState.selectedStopId != null ? 'Stop #${authState.selectedStopId}' : 'Not Set'),
+                          // End Stop Dropdown
+                          _buildStopDropdown(
+                            icon: Icons.tour_outlined,
+                            label: 'End Stop',
+                            stops: assignedRoute?.stops ?? [],
+                            currentValue: _selectedEndStopId,
+                            onChanged: (value) {
+                              setState(() => _selectedEndStopId = value);
+                              _saveTripSetup(_selectedStartStopId, value);
+                            },
+                          ),
+                          if (_isSavingTripSetup) const Padding(padding: EdgeInsets.only(top: 8.0), child: Center(child: LinearProgressIndicator())),
                         ],
                       ),
                     ),
@@ -322,6 +331,41 @@ class _DriverHomeScreenState extends State<DriverHomeScreen> {
                 ],
               ),
       ),
+    );
+  }
+
+  Widget _buildStopDropdown({required IconData icon, required String label, required List<RouteStop> stops, required String? currentValue, required ValueChanged<String?> onChanged}) {
+    return Row(
+      children: [
+        Icon(icon, color: const Color(0xFF2ED8C3), size: 20),
+        const SizedBox(width: 12),
+        Text('$label: ', style: GoogleFonts.urbanist(fontSize: 16, color: Colors.grey[400])),
+        Expanded(
+          child: DropdownButtonHideUnderline(
+            child: DropdownButton<String>(
+              value: currentValue,
+              isExpanded: true,
+              hint: Text('Select Stop', style: GoogleFonts.urbanist(color: Colors.grey[500])),
+              dropdownColor: const Color(0xFF2A2F33),
+              style: GoogleFonts.urbanist(fontSize: 16, fontWeight: FontWeight.bold, color: Colors.white),
+              onChanged: onChanged,
+              items: stops.map((stop) {
+                return DropdownMenuItem<String>(
+                  value: stop.id,
+                  child: Text(
+                    'Stop ${stop.order}: ${stop.name}',
+                    overflow: TextOverflow.ellipsis,
+                    textAlign: TextAlign.end,
+                  ),
+                );
+              }).toList(),
+              selectedItemBuilder: (context) => stops.map<Widget>((stop) {
+                return Align(alignment: Alignment.centerRight, child: Text(stop.name, overflow: TextOverflow.ellipsis));
+              }).toList(),
+            ),
+          ),
+        ),
+      ],
     );
   }
   Widget _buildInfoRow(IconData icon, String label, String value, {Widget? trailing}) {
