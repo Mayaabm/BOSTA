@@ -73,7 +73,17 @@ class _DriverDashboardScreenState extends State<DriverDashboardScreen> {
     if (!mounted) return;
 
     final authState = Provider.of<AuthService>(context, listen: false).currentState;
-    if (authState.assignedRoute == null || authState.driverInfo == null || authState.token == null || !authState.driverInfo!.onboardingComplete) {
+
+    debugPrint("[DriverDashboard] AuthState received in _initializeTrip:");
+    debugPrint("  > isAuthenticated: ${authState.isAuthenticated}");
+    debugPrint("  > token is present: ${authState.token != null}");
+    debugPrint("  > driverInfo is present: ${authState.driverInfo != null}");
+    debugPrint("  > assignedRoute is present: ${authState.assignedRoute != null}");
+
+    // --- FIX: Loosen the validation. The most critical pieces of information are the
+    // bus ID (to know who is moving) and the assigned route (to know where they are going).
+    // The `onboardingComplete` flag is for UI flow, not a hard requirement for a trip.
+    if (authState.assignedRoute == null || authState.driverInfo?.busId == null || authState.token == null) {
       setState(() {
         _errorMessage = "Could not load trip data. Please go back and set up the trip again.";
         _isLoading = false;
@@ -82,20 +92,38 @@ class _DriverDashboardScreenState extends State<DriverDashboardScreen> {
       return;
     }
 
-    // --- FIX: Prioritize the tripId passed from the router ---
-    // This avoids the race condition where the GET request to /driver/me/
-    // happens before the backend has updated the active_trip_id.
+    // --- NEW SOLUTION: AGGRESSIVE POLLING ---
+    // Since the previous screen no longer passes a tripId, this screen is now
+    // responsible for finding it. We will poll the backend until the active_trip_id appears.
     debugPrint("[DriverDashboard] 1. DETERMINING TRIP ID...");
     debugPrint("  > Checking for tripId from router 'extra': ${widget.tripId}");
-    final tripId = widget.tripId ?? await TripService.checkForActiveTrip(authState.token!);
+
+    String? tripId;
+    int attempts = 0;
+    const maxAttempts = 10; // Poll for up to 10 seconds
+    const pollInterval = Duration(seconds: 1);
+
+    while (tripId == null && attempts < maxAttempts) {
+      attempts++;
+      debugPrint("[DriverDashboard] Polling for active trip... Attempt $attempts/$maxAttempts");
+      tripId = await TripService.checkForActiveTrip(authState.token!);
+      if (tripId == null) {
+        await Future.delayed(pollInterval);
+      }
+    }
+
+    if (tripId != null) {
+      debugPrint("[DriverDashboard] Polling successful! Found active_trip_id: '$tripId' after $attempts attempts.");
+    }
+
     debugPrint("  > Final tripId to be used: '$tripId'");
 
     if (tripId == null) {
       setState(() {
-        _errorMessage = "No active trip found. Please start a new trip from the onboarding screen.";
+        _errorMessage = "Failed to find an active trip after starting. Please go back and try again.";
         _isLoading = false;
       });
-      debugPrint("[DriverDashboard] X FAILED: Could not determine an active trip ID. Aborting.");
+      debugPrint("[DriverDashboard] X FAILED: Could not determine an active trip ID after $maxAttempts attempts. Aborting.");
       return;
     }
 

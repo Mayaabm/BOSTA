@@ -34,23 +34,22 @@ class TripService {
 
   /// Starts a new trip based on the driver's saved setup.
   /// Returns the new trip ID on success.
-  static Future<String> startNewTrip(String token, {
+  static Future<void> startNewTrip(String token, {
     String? startStopId,
     String? endStopId,
   }) async {
-    debugPrint("\n[TripService] --- Initiating startNewTrip ---");
-    final uri = Uri.parse(ApiEndpoints.startNewTrip); // Endpoint to create and start a trip
-    
-    debugPrint("[TripService] 1. Preparing POST request.");
-    debugPrint("  > Target URI: $uri");
-    debugPrint("  > Auth Token: Bearer ${token.substring(0, 8)}...");
-    
+    // This endpoint is now on the AuthService, but the logic fits better here.
+    // The backend uses the 'onboard' endpoint to create a trip.
+    final uri = Uri.parse(ApiEndpoints.driverOnboard);
+
     final requestBody = {
-      'start_stop_id': startStopId,
-      'end_stop_id': endStopId,
+      'selected_start_stop_id': startStopId,
+      'selected_end_stop_id': endStopId,
+      'create_new_trip': true, // The crucial flag for the backend
     };
-    debugPrint("  > Request Body: ${json.encode(requestBody)}");
-    debugPrint("[TripService] 2. Sending POST request to backend...");
+
+    debugPrint("[TripService.startNewTrip] Sending POST to $uri with body: ${json.encode(requestBody)}");
+
     final response = await http.post(
       uri,
       headers: {
@@ -60,31 +59,17 @@ class TripService {
       body: json.encode(requestBody),
     );
 
-    debugPrint("[TripService] 3. Backend response received.");
-    debugPrint("  > HTTP Status: ${response.statusCode}");
-    debugPrint("  > Response Body: ${response.body}");
+    debugPrint("[TripService.startNewTrip] Response status: ${response.statusCode}, body: ${response.body}");
 
-    if (response.statusCode == 201 || response.statusCode == 200) { // 201 Created or 200 OK
-      debugPrint("[TripService] 4. SUCCESS: Status is 200/201. Parsing response body...");
-      final data = json.decode(response.body);
-      debugPrint("  > Parsed JSON data: $data");
-      
-      final startedTripId = data['trip_id']?.toString();
-      debugPrint("  > Extracted 'trip_id': $startedTripId");
-      
-      if (startedTripId != null) {
-        debugPrint("[TripService] 5. SUCCESS: Returning tripId '$startedTripId' to caller.");
-        return startedTripId;
-      } else {
-        debugPrint("[TripService] X FAILED: Response was successful, but 'trip_id' key was not found in the JSON body.");
-        throw Exception('Failed to start trip: trip_id not found in response.');
-      }
-    } else if (response.statusCode == 400) { // Handle other 400 errors
-      debugPrint("[TripService] X FAILED: Backend returned HTTP 400 (Bad Request).");
-      throw Exception('Failed to start trip. Status: 400, Body: ${response.body}');
+    // IMPORTANT: We are NOT checking for a trip_id in the response anymore.
+    // We are just firing the request to trigger the backend process.
+    // The DriverDashboardScreen will be responsible for finding the trip ID via polling.
+    if (response.statusCode == 200) {
+      debugPrint("[TripService.startNewTrip] Successfully sent trip creation request.");
+      // Success.
     } else {
-      debugPrint("[TripService] X FAILED: Backend returned unhandled status ${response.statusCode}.");
-      throw Exception('Failed to start trip. Status: ${response.statusCode}, Body: ${response.body}');
+      debugPrint("[TripService.startNewTrip] Failed to send trip creation request.");
+      throw Exception('Failed to send trip creation request. Status: ${response.statusCode}');
     }
   }
 

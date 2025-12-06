@@ -309,7 +309,20 @@ class _DriverOnboardingScreenState extends State<DriverOnboardingScreen> {
               // Show "Done" button when in edit mode
               if (_isEditMode)
                 ElevatedButton(
-                  onPressed: () => GoRouter.of(context).go('/driver/home'),
+                  // --- FIX: Use pop() instead of go() ---
+                  // This returns to the previous screen (DriverHomeScreen) which is waiting
+                  // for the onboarding to complete. Using go() creates a new instance of
+                  // the home screen, leaving the old one stuck in a loading state.
+                  onPressed: () {
+                    // --- FIX: Handle both navigation scenarios ---
+                    // If we can pop (i.e., we came from another screen like DriverHome), we pop.
+                    // If we can't (i.e., we were redirected here directly after login), we go to the home screen.
+                    if (GoRouter.of(context).canPop()) {
+                      GoRouter.of(context).pop();
+                    } else {
+                      GoRouter.of(context).go('/driver/home');
+                    }
+                  },
                   style: ElevatedButton.styleFrom(
                     backgroundColor: const Color(0xFF1F2327), // A more subtle color for "Done"
                     padding: const EdgeInsets.symmetric(vertical: 16),

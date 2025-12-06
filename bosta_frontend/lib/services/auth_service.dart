@@ -280,6 +280,9 @@ class AuthService extends ChangeNotifier {
           selectedStartLat: selectedStartLat ?? _state.selectedStartLat,
           selectedStartLon: selectedStartLon ?? _state.selectedStartLon,
           initialBusPosition: initialPosition,
+          // --- DEFINITIVE FIX ---
+          // The phone number, along with other direct driver attributes, MUST come from the
+          // newly fetched 'info' object, not the old state. This was the root cause of the bug.
           phoneNumber: info.phoneNumber,
           busPlateNumber: info.busPlateNumber,
           busCapacity: info.busCapacity,
@@ -304,7 +307,7 @@ class AuthService extends ChangeNotifier {
 
   /// Sends partial updates to the driver's profile using a PATCH request.
   /// Returns null on success, or an error message on failure.
-  Future<String?> patchDriverProfile(Map<String, dynamic> data, {bool createNewTrip = false}) async { // Returns tripId if createNewTrip is true, else null
+  Future<String?> patchDriverProfile(Map<String, dynamic> data, {bool createNewTrip = false}) async {
     final stopwatch = Stopwatch()..start(); // For performance monitoring
 
     final accessToken = _state.token;
@@ -321,6 +324,10 @@ class AuthService extends ChangeNotifier {
     // The backend uses the same 'onboard' endpoint for both initial setup and updates.
     // It expects a POST request, not a PATCH or PUT on /driver/me/.
     final uri = Uri.parse(ApiEndpoints.driverOnboard);
+    debugPrint("======================================================================");
+    debugPrint("[AuthService.patchDriverProfile] Initiating trip creation/profile patch.");
+    debugPrint("  > Endpoint: $uri");
+    debugPrint("  > createNewTrip flag: $createNewTrip");
     debugPrint("[AuthService] patchDriverProfile: Sending POST to $uri with data: ${json.encode(requestData)}");
     try {
       // Use http.post to match the backend's expectation for this endpoint.
@@ -334,18 +341,67 @@ class AuthService extends ChangeNotifier {
       );
 
       debugPrint("[AuthService] patchDriverProfile: Response status: ${response.statusCode}, body: ${response.body}");
+      debugPrint("  > Raw Response Body: ${response.body}");
+      debugPrint("======================================================================");
 
       if (response.statusCode == 200) {
+        // --- NEW SOLUTION: Smart State Update ---
+        // If we are NOT creating a new trip, we are just saving the start/end stops.
+        // In this case, we should NOT re-fetch the entire profile. Doing so wipes
+        // the state because the POST response is minimal.
+        // --- FIX: This optimization should ONLY apply if we are *only* saving stops.
+        // If other profile data is present, we must re-fetch.
+        final isSavingStopsOnly = data.keys.isNotEmpty && data.keys.every(
+            (k) => k == 'selected_start_stop_id' || k == 'selected_end_stop_id'
+        );
+
+        if (!createNewTrip && isSavingStopsOnly) {
+            debugPrint("[AuthService.patchDriverProfile] Saving stops only. Updating state locally without re-fetch.");
+            debugPrint("  > STATE BEFORE UPDATE: driverInfo is ${ _state.driverInfo != null ? 'PRESENT' : 'NULL'}, assignedRoute is ${_state.assignedRoute != null ? 'PRESENT' : 'NULL'}");
+            debugPrint("  > Updating selectedStopId to: ${data['selected_start_stop_id']?.toString()}");
+            debugPrint("  > Updating selectedEndStopId to: ${data['selected_end_stop_id']?.toString()}");
+
+            _state = AuthState(
+                // --- THE FIX: Ensure ALL properties are copied from the old state ---
+                isAuthenticated: _state.isAuthenticated,
+                role: _state.role,
+                driverInfo: _state.driverInfo, // Preserve existing driver info
+                assignedRoute: _state.assignedRoute, // Preserve existing route info
+                token: _state.token,
+                refreshToken: _state.refreshToken,
+                // Update only the changed fields
+                selectedStopId: data['selected_start_stop_id']?.toString(),
+                selectedEndStopId: data['selected_end_stop_id']?.toString(),
+                // Preserve all other fields
+                selectedStartTime: _state.selectedStartTime,
+                selectedStartLat: _state.selectedStartLat,
+                selectedStartLon: _state.selectedStartLon,
+                initialBusPosition: _state.initialBusPosition,
+                phoneNumber: _state.phoneNumber,
+                busPlateNumber: _state.busPlateNumber,
+                busCapacity: _state.busCapacity,
+                lastCreatedTripId: _state.lastCreatedTripId,
+                rawDriverProfile: _state.rawDriverProfile,
+            );
+            notifyListeners();
+            debugPrint("  > STATE AFTER UPDATE: driverInfo is ${ _state.driverInfo != null ? 'PRESENT' : 'NULL'}, assignedRoute is ${_state.assignedRoute != null ? 'PRESENT' : 'NULL'}");
+            debugPrint("[AuthService.patchDriverProfile] State updated with new stops. Returning success.");
+            return null; // <-- CRITICAL FIX: Exit the function here.
+          }
+
+        // --- EXISTING LOGIC for createNewTrip=true ---
+        // This part only runs when the "Start Trip" button is pressed.
         final responseData = json.decode(response.body);
         final newTripId = responseData['trip_id']?.toString();
         
-        // --- THE FIX: Trust the backend's response to be the source of truth ---
+        // --- LOGIC FOR createNewTrip=true OR for general profile updates ---
         // If we are creating a new trip, the backend MUST return the new trip_id.
         // We pass this ID to the state update to avoid race conditions.
         debugPrint("[AuthService] patchDriverProfile: POST successful. Now re-fetching the full profile to get the latest state...");
+        // --- FIX: When re-fetching after a general profile update, we must NOT pass old/stale stop IDs.
+        // Passing null for the stop IDs ensures that fetchAndSetDriverProfile uses the values from the backend
+        // or preserves the existing state, preventing the new profile data from being overwritten.
         String? fetchError = await fetchAndSetDriverProfile(
-          selectedStopId: data['selected_start_stop_id']?.toString(),
-          selectedEndStopId: data['selected_end_stop_id']?.toString(),
           lastCreatedTripId: newTripId, // Pass the new trip ID to the state
         );
 
@@ -358,11 +414,10 @@ class AuthService extends ChangeNotifier {
           debugPrint("[AuthService] Waiting 1 second and re-fetching...");
           debugPrint("!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!");
           await Future.delayed(const Duration(seconds: 1));
-          fetchError = await fetchAndSetDriverProfile(
-            selectedStopId: data['selected_start_stop_id']?.toString(),
-            selectedEndStopId: data['selected_end_stop_id']?.toString(),
-            lastCreatedTripId: newTripId,
-          );
+          // --- DEFINITIVE FIX: When re-fetching due to a race condition, do NOT pass any parameters. ---
+          // Passing any parameters was causing the state to be partially overwritten.
+          // A clean fetch gets the true state from the backend.
+          fetchError = await fetchAndSetDriverProfile(token: accessToken, refreshToken: _state.refreshToken);
         }
 
         if (fetchError != null) {
@@ -370,11 +425,7 @@ class AuthService extends ChangeNotifier {
         }
 
         // If we were creating a trip, return the new trip ID. Otherwise, return null for success.
-        if (createNewTrip) {
-          return newTripId; // Return the explicit trip ID
-        }
-
-        return null; // Return null for success on a normal patch
+        return createNewTrip ? newTripId : null;
       } else {
         // Provide a more detailed error message for debugging
         debugPrint("[AuthService] patchDriverProfile: Error. Status: ${response.statusCode}.");
@@ -483,6 +534,7 @@ class AuthService extends ChangeNotifier {
       debugPrint("[AuthService.doPost] Response body: ${response.body}");
 
       if (response.statusCode == 200) {
+        debugPrint("[AuthService.doPost] POST successful. Parsing response...");
         final data = json.decode(response.body);
         debugPrint("[AuthService.doPost] Parsed response: $data");
         debugPrint("[AuthService.doPost] Response keys: ${data.keys.toList()}");
@@ -495,7 +547,7 @@ class AuthService extends ChangeNotifier {
         // This fetch will also update the selected stop and time.
         debugPrint("[AuthService.doPost] ---> STEP 1 COMPLETE. Now calling fetchAndSetDriverProfile to get full profile state...");
         final fetchError = await fetchAndSetDriverProfile(
-          token: token,
+          token: token, // Ensure we use the current token
           lastCreatedTripId: newTripId,
           // Lat/Lon are not part of this flow, so they remain null/unchanged.
         );
@@ -505,7 +557,7 @@ class AuthService extends ChangeNotifier {
         // manually inject the trip ID we just received from the creation response.
         debugPrint("[AuthService.doPost] ---> STEP 2: CHECKING FOR RACE CONDITION...");
         if (fetchError == null && newTripId != null && _state.rawDriverProfile?['active_trip_id'] == null) {
-          debugPrint("!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!");
+          debugPrint("!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!"); // Keep this for high visibility
           debugPrint("[AuthService.doPost] RACE CONDITION DETECTED. Manually setting active_trip_id to '$newTripId'.");
           debugPrint("!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!");
           final newRawProfile = Map<String, dynamic>.from(_state.rawDriverProfile ?? {});

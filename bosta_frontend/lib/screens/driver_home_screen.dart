@@ -65,6 +65,25 @@ class _DriverHomeScreenState extends State<DriverHomeScreen> {
       return;
     }
 
+    // If onboarding isn't complete, guide the user to the edit screen first.
+    if (authState.driverInfo?.onboardingComplete == false) {
+      debugPrint("[DriverHomeScreen] Onboarding is not complete. Navigating to edit profile screen.");
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(content: Text("Please complete your profile to continue.")),
+      );
+      // --- FIX: Navigate and wait for a result ---
+      // We navigate to the onboarding screen. When we come back, we check if the
+      // profile is now complete. If so, we re-run this function to proceed with the trip.
+      final result = await GoRouter.of(context).push('/driver/onboarding?edit=true');
+
+      // After returning, re-check and re-trigger if necessary.
+      if (mounted && Provider.of<AuthService>(context, listen: false).currentState.driverInfo?.onboardingComplete == true) {
+        debugPrint("[DriverHomeScreen] Returned from onboarding. Profile is now complete. Re-initiating trip start.");
+        _startNewTrip(); // Re-run the process
+      }
+      return; // Stop the current execution
+    }
+
     // --- VALIDATION ---
     // Ensure both start and end stops are selected before starting.
     if (authState.selectedStopId == null || authState.selectedEndStopId == null) {
@@ -77,33 +96,25 @@ class _DriverHomeScreenState extends State<DriverHomeScreen> {
     }
 
     try {
-      debugPrint("[DriverHomeScreen] 2. CALLING SERVICE: All checks passed. Calling AuthService.patchDriverProfile to create the trip...");
-      // --- FIX: Use the correct service method that calls the backend's trip creation endpoint ---
-      // The backend creates a trip via the 'onboard' endpoint when trip details are passed.
-      await authService.patchDriverProfile(
-        {
-          'selected_start_stop_id': authState.selectedStopId,
-          'selected_end_stop_id': authState.selectedEndStopId,
-        },
-        createNewTrip: true, // This flag might be used by the backend to initiate the trip.
+      debugPrint("[DriverHomeScreen] 2. CALLING SERVICE: All checks passed. Calling TripService.startNewTrip...");
+      // --- NEW SOLUTION: Use a dedicated service method to "fire-and-forget" the trip creation request.
+      // We no longer expect a trip ID in return from this call.
+      await TripService.startNewTrip(
+        token,
+        startStopId: authState.selectedStopId,
+        endStopId: authState.selectedEndStopId,
       );
 
-      // After the patch, the AuthService state is updated, and we can get the new trip ID.
-      // The active_trip_id is now the source of truth after the re-fetch.
-      final newTripId = authService.currentState.rawDriverProfile?['active_trip_id']?.toString();
-      if (newTripId == null) {
-        throw Exception("Trip was created, but no trip_id was returned from the service.");
-      }
-
-      debugPrint("[DriverHomeScreen] 3. SERVICE SUCCEEDED: TripService returned newTripId: '$newTripId'");
-      // FIX: Directly navigate to the dashboard instead of calling _resumeTrip,
-      // which was causing an infinite loop.
-      debugPrint("[DriverHomeScreen] 4. NAVIGATING: Calling GoRouter.go('/driver/dashboard') with tripId as extra.");
-      GoRouter.of(context).go('/driver/dashboard', extra: newTripId);
+      debugPrint("[DriverHomeScreen] 3. SERVICE SUCCEEDED: Trip creation request sent successfully.");
+      // --- NEW SOLUTION: Navigate to the dashboard without any 'extra' data.
+      // The dashboard itself will now be responsible for finding the active trip.
+      debugPrint("[DriverHomeScreen] 4. NAVIGATING: Calling GoRouter.go('/driver/dashboard').");
+      GoRouter.of(context).go('/driver/dashboard');
     } catch (e) {
       debugPrint("[DriverHomeScreen] X CATASTROPHIC FAILURE: The 'startNewTrip' process threw an exception.");
       debugPrint("  > Exception: $e");
       debugPrint("  > Stack Trace: ${StackTrace.current}");
+      _errorMessage = "Could not start trip. Please try again. Error: $e";
       setState(() {
         _isLoading = false;
       });
