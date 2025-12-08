@@ -16,6 +16,8 @@ class TripLeg {
   final String exitAt;
   final bool available;
   final int? etaMinutes;
+  final double? destLat;
+  final double? destLon;
 
   TripLeg({
     required this.routeName,
@@ -23,6 +25,8 @@ class TripLeg {
     required this.exitAt,
     required this.available,
     this.etaMinutes,
+    this.destLat,
+    this.destLon,
   });
 
   factory TripLeg.fromJson(Map<String, dynamic> json) {
@@ -32,6 +36,8 @@ class TripLeg {
       exitAt: json['exit_at'] ?? 'Unknown Stop',
       available: json['available'] ?? false,
       etaMinutes: json['eta_minutes'],
+      destLat: json['dest_lat']?.toDouble(),
+      destLon: json['dest_lon']?.toDouble(),
     );
   }
 }

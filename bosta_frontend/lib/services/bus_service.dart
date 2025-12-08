@@ -36,7 +36,7 @@ class BusService {
     required String token, // Add token parameter
     AuthService? authService, // Make AuthService available
   }) async {
-    final uri = Uri.parse('${ApiEndpoints.base}/driver/update-location/'); // Assuming this endpoint
+    final uri = Uri.parse(ApiEndpoints.updateLocation); // Use the correct endpoint from ApiEndpoints
 
     Future<http.Response> doPost(String currentToken) {
       return http.post(

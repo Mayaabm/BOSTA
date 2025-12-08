@@ -17,6 +17,7 @@ import '../models/bus.dart'; // Using the actual model
 import '../services/api_endpoints.dart';
 import '../models/app_route.dart'; // Using the unified route model
 import '../models/trip_suggestion.dart';
+import '../services/trip_service.dart';
 import '../services/bus_service.dart'; // Using the actual service
 import '../services/auth_service.dart'; // For getting auth token
 // Using the actual service
@@ -34,6 +35,9 @@ class RiderHomeScreen extends StatefulWidget {
 }
 
 class _RiderHomeScreenState extends State<RiderHomeScreen> with TickerProviderStateMixin {
+    // ETA state for selected bus
+    String? _etaBusToRider;
+    bool _isFetchingEta = false;
   final MapController mapController = MapController();
   final PanelController _panelController = PanelController();
   Position? _currentPosition;
@@ -249,6 +253,9 @@ class _RiderHomeScreenState extends State<RiderHomeScreen> with TickerProviderSt
     // Stop any previous timer
     _selectedBusDetailsTimer?.cancel();
 
+    // Fetch ETA from bus to rider location
+    _fetchEtaBusToRider(bus);
+
     // Show the modal with live updates
     showModalBottomSheet(
       context: context,
@@ -290,7 +297,59 @@ class _RiderHomeScreenState extends State<RiderHomeScreen> with TickerProviderSt
       _markerAnimation = null;
       _selectedBusRoute = null; // Clear the route when deselecting
       _isAutoCentering = false;
+      _etaBusToRider = null;
+      _isFetchingEta = false;
     });
+  }
+
+  Future<void> _fetchEtaBusToRider(Bus bus) async {
+    if (_currentPosition == null) return;
+    setState(() {
+      _isFetchingEta = true;
+      _etaBusToRider = null;
+    });
+    debugPrint("[Rider] Fetching ETA for bus ${bus.id} to rider...");
+    try {
+      final busLat = bus.latitude;
+      final busLon = bus.longitude;
+      final riderLat = _currentPosition!.latitude;
+      final riderLon = _currentPosition!.longitude;
+      final originCoords = "$busLon,$busLat";
+      final destCoords = "$riderLon,$riderLat";
+      final url =
+          'https://api.mapbox.com/directions/v5/mapbox/driving-traffic/$originCoords;$destCoords?access_token=${TripService.getMapboxAccessToken()}&overview=full&geometries=geojson';
+      debugPrint("[Rider] Mapbox ETA bus→rider: $url");
+      final resp = await http.get(Uri.parse(url));
+      if (resp.statusCode == 200) {
+        final data = json.decode(resp.body);
+        if (data['routes'] != null && data['routes'].isNotEmpty) {
+          final route = data['routes'][0];
+          final double durationSeconds = route['duration']?.toDouble() ?? 0.0;
+          final double distanceMeters = route['distance']?.toDouble() ?? 0.0;
+          debugPrint("[Rider] ETA bus→rider: "+
+              "${(durationSeconds/60).toStringAsFixed(1)} min, ${(distanceMeters/1000).toStringAsFixed(2)} km");
+          setState(() {
+            _etaBusToRider = "${(durationSeconds/60).ceil()} min";
+          });
+        } else {
+          debugPrint("[Rider] No route found for bus→rider");
+          setState(() {
+            _etaBusToRider = "--";
+          });
+        }
+      } else {
+        debugPrint("[Rider] Mapbox error for bus→rider: ${resp.statusCode}");
+        setState(() {
+          _etaBusToRider = "--";
+        });
+      }
+    } catch (e) {
+      debugPrint("[Rider] Exception fetching ETA: $e");
+      setState(() {
+        _etaBusToRider = "--";
+      });
+    }
+    if (mounted) setState(() { _isFetchingEta = false; });
   }
 
   Future<void> _fetchSelectedBusDetails(String busId) async {
@@ -521,19 +580,8 @@ class _RiderHomeScreenState extends State<RiderHomeScreen> with TickerProviderSt
   }
 
   Widget _buildStaticSelectedMarker() {
-    // Default values for when bus details are still loading
-    String etaText = '...';
-    if (_selectedBus?.eta != null) {
-      final eta = _selectedBus!.eta!;
-      if (eta.hours > 0) {
-        etaText = '${eta.hours}h ${eta.minutes}m';
-      } else if (eta.minutes > 0) {
-        etaText = '${eta.minutes} min';
-      } else {
-        etaText = '<1 min';
-      }
-    }
-
+    // Show ETA from Mapbox fetch if available
+    String etaText = _etaBusToRider ?? '...';
     final driverName = _selectedBus?.driverName ?? 'Loading...';
 
     return Column(

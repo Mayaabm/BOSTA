@@ -4,6 +4,10 @@ import '../models/bus.dart';
 import 'rider_home_screen.dart';
 
 class BusBottomSheet extends StatelessWidget {
+    final Bus? selectedBus;
+    final String? etaBusToRider;
+    final String? etaBusToDestination;
+    final bool isFetchingEta;
   final ScrollController scrollController;
   final RiderView currentView;
   final List<Bus> suggestedBuses;
@@ -17,6 +21,10 @@ class BusBottomSheet extends StatelessWidget {
     required this.suggestedBuses,
     required this.nearbyBuses,
     required this.onBusSelected,
+    this.selectedBus,
+    this.etaBusToRider,
+    this.etaBusToDestination,
+    this.isFetchingEta = false,
   });
 
   @override
@@ -97,6 +105,9 @@ class BusBottomSheet extends StatelessWidget {
   Widget _buildBusListItem(BuildContext context, Bus bus) {
     final distanceKm = bus.distanceMeters != null ? (bus.distanceMeters! / 1000).toStringAsFixed(1) : '...';
 
+    // Show ETAs and driver info only for the selected bus
+    final bool showEtas = selectedBus != null && selectedBus!.id == bus.id;
+
     return ListTile(
       leading: const CircleAvatar(
         backgroundColor: Color(0xFF2ED8C3),
@@ -109,22 +120,59 @@ class BusBottomSheet extends StatelessWidget {
           color: Colors.white,
         ),
       ),
-      subtitle: Text(
-        bus.routeName ?? 'Unknown Route',
-        style: GoogleFonts.urbanist(color: Colors.white70),
+      subtitle: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Text(
+            bus.routeName ?? 'Unknown Route',
+            style: GoogleFonts.urbanist(color: Colors.white70),
+          ),
+          if (showEtas) ...[
+            const SizedBox(height: 8),
+            Row(
+              children: [
+                const Icon(Icons.person_outline, color: Color(0xFF2ED8C3), size: 18),
+                const SizedBox(width: 6),
+                Text(
+                  bus.driverName ?? 'N/A',
+                  style: GoogleFonts.urbanist(fontSize: 15, fontWeight: FontWeight.w600, color: Colors.white),
+                ),
+                const SizedBox(width: 10),
+                const Icon(Icons.star, color: Colors.amber, size: 16),
+                Text(
+                  (bus.driverRating ?? 0.0).toStringAsFixed(1),
+                  style: GoogleFonts.urbanist(color: Colors.white, fontWeight: FontWeight.w600, fontSize: 14),
+                ),
+              ],
+            ),
+          ],
+        ],
       ),
       trailing: Column(
         mainAxisAlignment: MainAxisAlignment.center,
         crossAxisAlignment: CrossAxisAlignment.end,
         children: [
-          Text(
-            bus.eta?.toMinutesString() ?? '...',
-            style: GoogleFonts.urbanist(
-              color: const Color(0xFF2ED8C3),
-              fontWeight: FontWeight.bold,
-              fontSize: 16,
+          if (showEtas && isFetchingEta)
+            const SizedBox(
+              width: 24,
+              height: 24,
+              child: CircularProgressIndicator(strokeWidth: 2, color: Color(0xFF2ED8C3)),
             ),
-          ),
+          if (showEtas && !isFetchingEta) ...[
+            Text('Bus → You: ${etaBusToRider ?? '--'}',
+                style: GoogleFonts.urbanist(color: Color(0xFF2ED8C3), fontWeight: FontWeight.bold, fontSize: 14)),
+            Text('Bus → Dest: ${etaBusToDestination ?? '--'}',
+                style: GoogleFonts.urbanist(color: Color(0xFF2ED8C3), fontWeight: FontWeight.bold, fontSize: 14)),
+          ],
+          if (!showEtas)
+            Text(
+              bus.eta?.toMinutesString() ?? '...',
+              style: GoogleFonts.urbanist(
+                color: const Color(0xFF2ED8C3),
+                fontWeight: FontWeight.bold,
+                fontSize: 16,
+              ),
+            ),
           Text(
             '$distanceKm km away',
             style: GoogleFonts.urbanist(color: Colors.white54, fontSize: 12),
@@ -132,8 +180,6 @@ class BusBottomSheet extends StatelessWidget {
         ],
       ),
       onTap: () {
-        // This is where you could potentially show the detailed modal,
-        // but for now it just triggers the snackbar message.
         onBusSelected(bus);
       },
     );

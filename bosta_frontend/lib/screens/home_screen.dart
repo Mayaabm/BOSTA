@@ -6,6 +6,9 @@ import 'package:geolocator/geolocator.dart';
 import 'package:google_fonts/google_fonts.dart';
 import 'package:latlong2/latlong.dart';
 import 'package:sliding_up_panel/sliding_up_panel.dart';
+import 'package:http/http.dart' as http;
+import 'dart:convert';
+import '../services/trip_service.dart';
 
 import '../../../models/trip_suggestion.dart';
 import '../../../models/bus.dart';
@@ -22,6 +25,10 @@ class RiderHomeScreen extends StatefulWidget {
 }
 
 class _RiderHomeScreenState extends State<RiderHomeScreen> with TickerProviderStateMixin {
+    // ETA state for selected bus
+    String? _etaBusToRider;
+    String? _etaBusToDestination;
+    bool _isFetchingEta = false;
   final MapController _mapController = MapController();
   final PanelController _panelController = PanelController();
   Position? _currentPosition;
@@ -162,11 +169,94 @@ class _RiderHomeScreenState extends State<RiderHomeScreen> with TickerProviderSt
     ScaffoldMessenger.of(context).showSnackBar(
       SnackBar(content: Text("Starting trip with Bus ${bus.plateNumber}... (UI Placeholder)")),
     );
+
+    // Fetch ETAs for this bus
+    _fetchEtasForSelectedBus(bus);
+  }
+
+  Future<void> _fetchEtasForSelectedBus(Bus bus) async {
+    if (_currentPosition == null) return;
+    setState(() {
+      _isFetchingEta = true;
+      _etaBusToRider = null;
+      _etaBusToDestination = null;
+    });
+    debugPrint("[Rider] Fetching ETAs for bus ${bus.id}...");
+    try {
+      // 1. ETA from bus to rider location
+      final busLat = bus.latitude;
+      final busLon = bus.longitude;
+      final riderLat = _currentPosition!.latitude;
+      final riderLon = _currentPosition!.longitude;
+      final originCoords = "$busLon,$busLat";
+      final destCoords = "$riderLon,$riderLat";
+      final url1 =
+          'https://api.mapbox.com/directions/v5/mapbox/driving-traffic/$originCoords;$destCoords?access_token=${TripService.getMapboxAccessToken()}&overview=full&geometries=geojson';
+      debugPrint("[Rider] Mapbox ETA bus→rider: $url1");
+      final resp1 = await http.get(Uri.parse(url1));
+      if (resp1.statusCode == 200) {
+        final data = json.decode(resp1.body);
+        if (data['routes'] != null && data['routes'].isNotEmpty) {
+          final route = data['routes'][0];
+          final double durationSeconds = route['duration']?.toDouble() ?? 0.0;
+          final double distanceMeters = route['distance']?.toDouble() ?? 0.0;
+          debugPrint("[Rider] ETA bus→rider: ${(durationSeconds/60).toStringAsFixed(1)} min, ${(distanceMeters/1000).toStringAsFixed(2)} km");
+          _etaBusToRider = "${(durationSeconds/60).ceil()} min";
+        } else {
+          debugPrint("[Rider] No route found for bus→rider");
+          _etaBusToRider = "--";
+        }
+      } else {
+        debugPrint("[Rider] Mapbox error for bus→rider: ${resp1.statusCode}");
+        _etaBusToRider = "--";
+      }
+
+      // 2. ETA from bus to rider's destination (if available)
+      // For now, use the last trip suggestion's destination if available
+      if (_tripSuggestions.isNotEmpty) {
+        final lastLeg = _tripSuggestions.last.legs.last;
+        final destLat = lastLeg.destLat;
+        final destLon = lastLeg.destLon;
+        if (destLat != null && destLon != null) {
+          final destCoords2 = "$destLon,$destLat";
+          final url2 =
+              'https://api.mapbox.com/directions/v5/mapbox/driving-traffic/$originCoords;$destCoords2?access_token=${TripService.getMapboxAccessToken()}&overview=full&geometries=geojson';
+          debugPrint("[Rider] Mapbox ETA bus→destination: $url2");
+          final resp2 = await http.get(Uri.parse(url2));
+          if (resp2.statusCode == 200) {
+            final data = json.decode(resp2.body);
+            if (data['routes'] != null && data['routes'].isNotEmpty) {
+              final route = data['routes'][0];
+              final double durationSeconds = route['duration']?.toDouble() ?? 0.0;
+              final double distanceMeters = route['distance']?.toDouble() ?? 0.0;
+              debugPrint("[Rider] ETA bus→destination: ${(durationSeconds/60).toStringAsFixed(1)} min, ${(distanceMeters/1000).toStringAsFixed(2)} km");
+              _etaBusToDestination = "${(durationSeconds/60).ceil()} min";
+            } else {
+              debugPrint("[Rider] No route found for bus→destination");
+              _etaBusToDestination = "--";
+            }
+          } else {
+            debugPrint("[Rider] Mapbox error for bus→destination: ${resp2.statusCode}");
+            _etaBusToDestination = "--";
+          }
+        } else {
+          debugPrint("[Rider] TripLeg missing destination coordinates, cannot compute bus→destination ETA");
+          _etaBusToDestination = "--";
+        }
+      } else {
+        debugPrint("[Rider] No trip suggestion, cannot compute bus→destination ETA");
+        _etaBusToDestination = "--";
+      }
+    } catch (e) {
+      debugPrint("[Rider] Exception fetching ETAs: $e");
+      _etaBusToRider = _etaBusToDestination = "--";
+    }
+    if (mounted) setState(() { _isFetchingEta = false; });
   }
 
   @override
   Widget build(BuildContext context) {
-    final colorScheme = Theme.of(context).colorScheme;
+    // final colorScheme = Theme.of(context).colorScheme;
 
     return Scaffold(
       // Use a dark background that matches the map style
@@ -184,6 +274,10 @@ class _RiderHomeScreenState extends State<RiderHomeScreen> with TickerProviderSt
           suggestedBuses: const [], // This needs to be adapted for TripSuggestion
           nearbyBuses: _nearbyBuses,
           onBusSelected: _onBusSelected,
+          selectedBus: _selectedBus,
+          etaBusToRider: _etaBusToRider,
+          etaBusToDestination: _etaBusToDestination,
+          isFetchingEta: _isFetchingEta,
         ),
         body: Stack(
           children: [
