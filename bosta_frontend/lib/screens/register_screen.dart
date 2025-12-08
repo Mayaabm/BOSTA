@@ -19,6 +19,9 @@ class _RegisterScreenState extends State<RegisterScreen> {
   final _firstNameController = TextEditingController();
   final _lastNameController = TextEditingController();
   final _phoneController = TextEditingController();
+  // Optional bus info if registering as a driver
+  final _busPlateController = TextEditingController();
+  final _busCapacityController = TextEditingController();
 
   UserRole _selectedRole = UserRole.rider;
   bool _isLoading = false;
@@ -47,6 +50,9 @@ class _RegisterScreenState extends State<RegisterScreen> {
         firstName: _firstNameController.text.isNotEmpty ? _firstNameController.text : null,
         lastName: _lastNameController.text.isNotEmpty ? _lastNameController.text : null,
         phoneNumber: _phoneController.text.isNotEmpty ? _phoneController.text : null,
+        // include bus info when registering as a driver
+        busPlateNumber: _busPlateController.text.isNotEmpty ? _busPlateController.text : null,
+        busCapacity: _busCapacityController.text.isNotEmpty ? int.tryParse(_busCapacityController.text) : null,
       );
 
       // If registration failed, use that error. Otherwise, proceed to login.
@@ -93,6 +99,8 @@ class _RegisterScreenState extends State<RegisterScreen> {
     _firstNameController.dispose();
     _lastNameController.dispose();
     _phoneController.dispose();
+    _busPlateController.dispose();
+    _busCapacityController.dispose();
     super.dispose();
   }
 
@@ -140,6 +148,10 @@ class _RegisterScreenState extends State<RegisterScreen> {
                   _buildTextField(_lastNameController, 'Last Name', Icons.person),
                   const SizedBox(height: 8),
                   _buildTextField(_phoneController, 'Phone Number', Icons.phone, keyboardType: TextInputType.phone),
+                  const SizedBox(height: 8),
+                  _buildTextField(_busPlateController, 'Bus Plate Number (optional)', Icons.directions_bus_outlined),
+                  const SizedBox(height: 8),
+                  _buildTextField(_busCapacityController, 'Bus Capacity (optional)', Icons.group_outlined, keyboardType: TextInputType.number),
                   const SizedBox(height: 16),
                 ],
                 const SizedBox(height: 30),

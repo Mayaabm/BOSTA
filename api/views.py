@@ -454,8 +454,8 @@ def get_driver_profile(request):
     """
     user = request.user
     auth_header = request.META.get('HTTP_AUTHORIZATION', 'NO_AUTH_HEADER')
-    print(f"[DEBUG get_driver_profile] Auth header: {auth_header[:50] if auth_header else 'None'}...")
-    print(f"[DEBUG get_driver_profile] User: {user}, Authenticated: {user.is_authenticated}")
+    logger.warning(f"[DEBUG get_driver_profile] Auth header: {auth_header[:50] if auth_header else 'None'}...")
+    logger.warning(f"[DEBUG get_driver_profile] User: {user}, Authenticated: {user.is_authenticated}")
     
     try:
         # 1. Verify the user is a driver through their profile.
@@ -465,16 +465,22 @@ def get_driver_profile(request):
 
         # 2. Find the bus assigned to this driver (may be None) and the latest route.
         bus = Bus.objects.filter(driver=driver_profile).first()
-        print(f"[DEBUG get_driver_profile] user={user.username}, driver_profile={driver_profile.id}, bus={bus}")
+        logger.warning(f"[DEBUG get_driver_profile] user={user.username}, driver_profile={driver_profile.id}, bus={bus}")
         
         # Query trips related to this driver's profile (through buses driven by this profile)
         # This ensures we get trips even if the bus assignment recently changed
         latest_trip = Trip.objects.filter(bus__driver=driver_profile).order_by('-departure_time').first()
-        print(f"[DEBUG get_driver_profile] latest_trip={latest_trip}, status={latest_trip.status if latest_trip else None}")
-        
-        route = latest_trip.route if (latest_trip and latest_trip.route) else None
-        active_trip_id = latest_trip.id if latest_trip and latest_trip.status in [Trip.STATUS_PENDING, Trip.STATUS_STARTED] else None
-        print(f"[DEBUG get_driver_profile] active_trip_id={active_trip_id}")
+        logger.warning(f"[DEBUG get_driver_profile] latest_trip={latest_trip}, status={latest_trip.status if latest_trip else None}")
+        # Only set active_trip_id if the trip is pending or started
+        if latest_trip and latest_trip.status in [Trip.STATUS_PENDING, Trip.STATUS_STARTED]:
+            active_trip_id = latest_trip.id
+            route = latest_trip.route if latest_trip.route else None
+        else:
+            active_trip_id = None
+            # Use assigned_route if set, otherwise None
+            route = bus.assigned_route if bus and bus.assigned_route else None
+        logger.warning(f"[DEBUG get_driver_profile] active_trip_id={active_trip_id}")
+        logger.warning(f"[DEBUG get_driver_profile] assigned_route={bus.assigned_route if bus else None}")
 
         # --- FIX: Dynamically determine if the profile is complete ---
         # A profile is complete if the user has a name, phone, and an assigned bus with a plate.
@@ -487,14 +493,16 @@ def get_driver_profile(request):
 
         route_serializer = RouteSerializer(route) if route else None
 
-        return Response({
+        response_data = {
             "driver_name": user.get_full_name() or user.username,
             "phone_number": str(driver_profile.phone_number) if driver_profile.phone_number else None,
             "bus": BusNearbySerializer(bus).data if bus else None,
             "route": route_serializer.data if route_serializer else None,
             "active_trip_id": active_trip_id,
             "onboarding_complete": is_complete, # Return the calculated status
-        })
+        }
+        logger.warning(f"[DEBUG get_driver_profile] Response data: {response_data}")
+        return Response(response_data)
     except CustomUserProfile.DoesNotExist:
         return Response({"error": "Driver profile not found for this user."}, status=404)
     except Bus.DoesNotExist:
@@ -506,6 +514,7 @@ def get_driver_profile(request):
 @api_view(['POST'])
 @permission_classes([IsAuthenticated])
 def driver_onboard(request):
+    # Logging is already set up at the module level
     """
     Driver onboarding: accepts first/last name, phone number, bus plate and capacity,
     and optional route_id to create/assign a Bus (and optional Trip).
@@ -518,6 +527,7 @@ def driver_onboard(request):
         return Response({"error": "Driver profile not found for this user."}, status=404)
 
     if not profile.is_driver:
+        logger.warning(f"[driver_onboard] User {user.username} is not a driver.")
         return Response({"error": "This user is not a driver."}, status=403)
 
     first_name = (request.data.get('first_name') or '').strip()
@@ -526,6 +536,7 @@ def driver_onboard(request):
     bus_plate = (request.data.get('bus_plate_number') or '').strip()
     bus_capacity = request.data.get('bus_capacity')
     route_id = request.data.get('route_id')
+    logger.info(f"[driver_onboard] Parsed fields: first_name={first_name}, last_name={last_name}, phone={phone}, bus_plate={bus_plate}, bus_capacity={bus_capacity}, route_id={route_id}")
 
     # --- FIX: Update user and profile information separately to ensure saves are atomic ---
 
@@ -540,14 +551,14 @@ def driver_onboard(request):
         profile.phone_number = phone
         profile.save(update_fields=['phone_number'])
 
-    # Create or attach Bus if plate provided
+
+    # Create or attach Bus if plate provided, otherwise find bus for current driver
     bus = None
     if bus_plate:
         try:
-            # If a bus with this plate exists, attach it to this driver.
             bus, created = Bus.objects.get_or_create(plate_number=bus_plate, defaults={'capacity': int(bus_capacity) if bus_capacity else 30, 'driver': profile})
+            logger.info(f"[driver_onboard] Bus get_or_create: bus={bus}, created={created}")
             if not created:
-                # assign driver if not already assigned
                 bus.driver = profile
                 if bus_capacity:
                     try:
@@ -555,26 +566,43 @@ def driver_onboard(request):
                     except (ValueError, TypeError):
                         pass
                 bus.save(update_fields=['driver', 'capacity'])
+                logger.info(f"[driver_onboard] Updated bus assignment: bus={bus}, driver={profile}, capacity={bus.capacity}")
             else:
-                logger.warning("driver_onboard: created bus %s for driver %s", bus_plate, user.username)
+                logger.warning(f"[driver_onboard] Created new bus {bus_plate} for driver {user.username}")
         except Exception as e:
-            logger.exception("driver_onboard: failed to create/assign bus %s for user %s", bus_plate, user.username)
+            logger.exception(f"[driver_onboard] Failed to create/assign bus {bus_plate} for user {user.username}")
             return Response({"error": "failed", "message": "Could not create or assign bus."}, status=500)
+    else:
+        # If no bus_plate provided, find the bus for the current driver
+        bus = Bus.objects.filter(driver=profile).first()
+        logger.info(f"[driver_onboard] No bus_plate provided, found bus for driver: {bus}")
 
-    # --- REFACTOR: Remove trip creation logic from onboarding. ---
-    # The `driver_onboard` view should only be responsible for updating the driver's
-    # profile and bus information. Trip creation is now handled exclusively by the
-    # `create_and_start_trip` endpoint, making the logic much cleaner.
+    # If a route_id was provided, fetch the route, persist as assigned_route, and include it in the response
+    selected_route = None
+    if route_id and bus:
+        try:
+            selected_route = Route.objects.get(id=route_id)
+            logger.info(f"[driver_onboard] Selected route found: {selected_route}")
+            bus.assigned_route = selected_route
+            bus.save(update_fields=["assigned_route"])
+        except Route.DoesNotExist:
+            logger.warning(f"[driver_onboard] Route with id {route_id} does not exist.")
+            selected_route = None
+
     latest_trip = Trip.objects.filter(bus=bus).order_by('-departure_time').first() if bus else None
+    logger.info(f"[driver_onboard] Latest trip for bus: {latest_trip}")
+
+    # Do NOT create a trip here. Trip creation should only happen when the driver explicitly starts a trip.
 
     # Return collected onboarding result
     data = {
         "driver_name": user.get_full_name() or user.username,
         "bus": BusNearbySerializer(bus).data if bus else None,
-        "route": RouteSerializer(latest_trip.route).data if (latest_trip and latest_trip.route) else None,
+        "route": RouteSerializer(selected_route).data if selected_route else (RouteSerializer(latest_trip.route).data if (latest_trip and latest_trip.route) else None),
         "trip_id": None, # This endpoint no longer creates trips
         "active_trip_id": None,
     }
+    logger.info(f"[driver_onboard] Response data: {data}")
 
     return Response(data)
 
@@ -596,9 +624,9 @@ def create_and_start_trip(request):
         if not bus:
             return Response({"error": "No bus is assigned to this driver."}, status=status.HTTP_400_BAD_REQUEST)
 
-        # The route is derived from the latest trip or driver's assignment, not passed in.
+        # The route is derived from the latest trip or the bus's current assigned route
         latest_trip_for_route = Trip.objects.filter(bus=bus).order_by('-departure_time').first()
-        route = latest_trip_for_route.route if latest_trip_for_route else None
+        route = latest_trip_for_route.route if latest_trip_for_route else bus.assigned_route
 
         if not route:
             return Response({"error": "No route is assigned to this bus."}, status=status.HTTP_400_BAD_REQUEST)

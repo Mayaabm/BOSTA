@@ -33,12 +33,13 @@ class AppRouter {
           path: '/driver/home',
           builder: (context, state) => const DriverHomeScreen(), // This should now resolve correctly
         ),
-        GoRoute(
-          path: '/driver/dashboard',
-          builder: (context, state) {
-            return const DriverDashboardScreen(); // The const is valid for the correct screen
-          },
-        ),
+          GoRoute(
+            path: '/driver/dashboard/:tripId',
+            builder: (context, state) {
+              final tripId = state.pathParameters['tripId'];
+              return DriverDashboardScreen(tripId: tripId);
+            },
+          ),
         GoRoute(
           path: '/driver/onboarding',
           builder: (context, state) => const DriverOnboardingScreen(),

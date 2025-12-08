@@ -24,6 +24,12 @@ class _DriverHomeScreenState extends State<DriverHomeScreen> {
 
   Future<void> _startNewTrip() async {
     debugPrint("\n\n[DriverHomeScreen] >>>>>>>>>> STARTING 'startNewTrip' PROCESS <<<<<<<<<<");
+    debugPrint("[DriverHomeScreen] --- BUTTON PRESSED: Start Trip ---");
+    debugPrint("[DriverHomeScreen] --- Current context: $context ---");
+    debugPrint("[DriverHomeScreen] --- Current mounted: $mounted ---");
+    debugPrint("[DriverHomeScreen] --- SelectedStartStopId: $_selectedStartStopId ---");
+    debugPrint("[DriverHomeScreen] --- SelectedEndStopId: $_selectedEndStopId ---");
+    debugPrint("[DriverHomeScreen] --- Provider.of<AuthService>(context, listen: false): ${Provider.of<AuthService>(context, listen: false)} ---");
     // If a trip is already active, just navigate to the dashboard.
     final authService = Provider.of<AuthService>(context, listen: false);
     final activeTripIdFromState = authService.rawDriverProfile?['active_trip_id']?.toString();
@@ -103,7 +109,26 @@ class _DriverHomeScreenState extends State<DriverHomeScreen> {
       );
 
       debugPrint("[DriverHomeScreen] 3. SERVICE SUCCEEDED: Created trip with ID: $newTripId");
-      // --- FIX: Navigate to the dashboard, passing the new trip ID as a parameter. ---
+      debugPrint("[DriverHomeScreen] --- POLLING for active_trip_id and route after trip creation ---");
+      int pollCount = 0;
+      bool tripReady = false;
+      while (pollCount < 10 && mounted) {
+        await Future.delayed(const Duration(milliseconds: 300));
+        await authService.fetchAndSetDriverProfile();
+        final raw = authService.rawDriverProfile;
+        final activeTripId = raw?['active_trip_id']?.toString();
+        final route = raw?['route'];
+        debugPrint('[DriverHomeScreen] Poll $pollCount: active_trip_id=$activeTripId, route=${route != null ? 'present' : 'null'}');
+        if (activeTripId == newTripId && route != null) {
+          tripReady = true;
+          break;
+        }
+        pollCount++;
+      }
+      if (!tripReady) {
+        debugPrint('[DriverHomeScreen] Timed out waiting for trip to be ready. Proceeding anyway.');
+      }
+      debugPrint("[DriverHomeScreen] --- NAVIGATING to /driver/dashboard/$newTripId ---");
       final destinationUrl = '/driver/dashboard/$newTripId';
       debugPrint("[DriverHomeScreen] 4. NAVIGATING: Preparing to navigate to: $destinationUrl");
       if (!mounted) return; // Guard against disposed context

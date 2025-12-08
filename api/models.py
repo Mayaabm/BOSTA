@@ -23,6 +23,7 @@ class Bus(models.Model):
     driver = models.ForeignKey('CustomUserProfile', on_delete=models.SET_NULL, null=True, blank=True, related_name='bus_driven')
     current_location = models.PointField(srid=4326, null=True, blank=True)
     last_reported_at = models.DateTimeField(null=True, blank=True)
+    assigned_route = models.ForeignKey('Route', on_delete=models.SET_NULL, null=True, blank=True, related_name='buses_assigned', help_text='Route currently assigned to this bus (not necessarily active trip)')
 
     def __str__(self):
         return self.plate_number

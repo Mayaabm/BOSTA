@@ -294,19 +294,33 @@ class _DriverOnboardingScreenState extends State<DriverOnboardingScreen> {
               // Show "Done" button when in edit mode
               if (_isEditMode)
                 ElevatedButton(
-                  // --- FIX: Use pop() instead of go() ---
-                  // This returns to the previous screen (DriverHomeScreen) which is waiting
-                  // for the onboarding to complete. Using go() creates a new instance of
-              // the home screen, which is not the desired behavior.
-                  onPressed: () {                    
-                    if (GoRouter.of(context).canPop()) {
-                      context.pop();
+                  onPressed: () async {
+                    // Save both sections before returning
+                    setState(() => _isLoading = true);
+                    final personalError = await _saveSection({
+                      'first_name': _firstNameController.text,
+                      'last_name': _lastNameController.text,
+                      'phone_number': _phoneController.text,
+                    });
+                    final vehicleError = await _saveSection({
+                      'bus_plate_number': _busPlateController.text.toUpperCase(),
+                      'bus_capacity': int.tryParse(_busCapacityController.text),
+                    });
+                    setState(() => _isLoading = false);
+                    if (personalError == null && vehicleError == null) {
+                      if (GoRouter.of(context).canPop()) {
+                        context.pop();
+                      } else {
+                        GoRouter.of(context).go('/driver/home');
+                      }
                     } else {
-                      GoRouter.of(context).go('/driver/home');
+                      setState(() {
+                        _generalErrorMessage = personalError ?? vehicleError;
+                      });
                     }
                   },
                   style: ElevatedButton.styleFrom(
-                    backgroundColor: const Color(0xFF1F2327), // A more subtle color for "Done"
+                    backgroundColor: const Color(0xFF1F2327),
                     padding: const EdgeInsets.symmetric(vertical: 16),
                     shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
                   ),

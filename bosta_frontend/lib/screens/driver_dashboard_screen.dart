@@ -70,6 +70,7 @@ class _DriverDashboardScreenState extends State<DriverDashboardScreen> {
   /// Initializes the map, location services, and fetches initial trip data.
   Future<void> _initializeTrip() async {
     debugPrint("\n--- [DriverDashboard] Initialization Start ---");
+    debugPrint("\n--- [DriverDashboard] _initializeTrip called for tripId: ${widget.tripId} ---");
     debugPrint("\n\n[DriverDashboard] >>>>>>>>>> INITIALIZING TRIP <<<<<<<<<<");
     if (!mounted) return;
 
@@ -80,11 +81,20 @@ class _DriverDashboardScreenState extends State<DriverDashboardScreen> {
     debugPrint("  > token is present: ${authState.token != null}");
     debugPrint("  > driverInfo is present: ${authState.driverInfo != null}");
     debugPrint("  > assignedRoute is present: ${authState.assignedRoute != null}");
+    debugPrint("  > assignedRoute: ${authState.assignedRoute}");
+    debugPrint("  > driverInfo: ${authState.driverInfo}");
+    debugPrint("  > selectedEndStopId: ${authState.selectedEndStopId}");
+    debugPrint("  > initialBusPosition: ${authState.initialBusPosition}");
+    debugPrint("  > tripId from widget: ${widget.tripId}");
 
     // --- FIX: Loosen the validation. The most critical pieces of information are the
     // bus ID (to know who is moving) and the assigned route (to know where they are going).
     // The `onboardingComplete` flag is for UI flow, not a hard requirement for a trip.
     if (authState.assignedRoute == null || authState.driverInfo?.busId == null || authState.token == null) {
+      debugPrint("[DriverDashboard] ERROR: Missing assignedRoute, busId, or token!");
+      debugPrint("[DriverDashboard] assignedRoute: ${authState.assignedRoute}");
+      debugPrint("[DriverDashboard] busId: ${authState.driverInfo?.busId}");
+      debugPrint("[DriverDashboard] token: ${authState.token}");
       setState(() {
         _errorMessage = "Could not load trip data. Please go back and set up the trip again.";
         _isLoading = false;
@@ -101,6 +111,7 @@ class _DriverDashboardScreenState extends State<DriverDashboardScreen> {
     final String? tripId = widget.tripId;
 
     if (tripId == null) {
+      debugPrint("[DriverDashboard] ERROR: tripId is null!");
       setState(() {
         _errorMessage = "Could not identify the active trip. Please return to the home screen.";
         _isLoading = false;
@@ -123,6 +134,7 @@ class _DriverDashboardScreenState extends State<DriverDashboardScreen> {
           // Fallback if the selected end stop ID is not found in the route's stops
           _destinationStop = _assignedRoute!.stops.last;
           _destinationName = 'Final Destination';
+          debugPrint("[DriverDashboard] WARNING: selectedEndStopId not found in route stops. Using last stop as destination.");
         }
       } else if (_assignedRoute != null && _assignedRoute!.stops.isNotEmpty) {
         _destinationStop = _assignedRoute!.stops.last;
@@ -134,6 +146,12 @@ class _DriverDashboardScreenState extends State<DriverDashboardScreen> {
       // Calculate the specific route segment for this trip
       _calculateTripGeometry();
       debugPrint("[DriverDashboard] 2. STATE INITIALIZED: Set local state with tripId, route, and destination info.");
+      debugPrint("[DriverDashboard] _assignedRoute: $_assignedRoute");
+      debugPrint("[DriverDashboard] _driverInfo: $_driverInfo");
+      debugPrint("[DriverDashboard] _busId: $_busId");
+      debugPrint("[DriverDashboard] _authToken: $_authToken");
+      debugPrint("[DriverDashboard] _destinationStop: $_destinationStop");
+      debugPrint("[DriverDashboard] _activeTripId: $_activeTripId");
     });
 
     // Check for location permissions before proceeding.
