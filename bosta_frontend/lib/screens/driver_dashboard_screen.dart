@@ -69,6 +69,7 @@ class _DriverDashboardScreenState extends State<DriverDashboardScreen> {
 
   /// Initializes the map, location services, and fetches initial trip data.
   Future<void> _initializeTrip() async {
+    debugPrint("\n--- [DriverDashboard] Initialization Start ---");
     debugPrint("\n\n[DriverDashboard] >>>>>>>>>> INITIALIZING TRIP <<<<<<<<<<");
     if (!mounted) return;
 
@@ -88,42 +89,24 @@ class _DriverDashboardScreenState extends State<DriverDashboardScreen> {
         _errorMessage = "Could not load trip data. Please go back and set up the trip again.";
         _isLoading = false;
       });
+      debugPrint("--- [DriverDashboard] Initialization End (Failure) ---\n");
       debugPrint("[DriverDashboard] X FAILED: Prerequisite data (route, driverInfo, token, etc.) is missing from AuthState. Aborting.");
       return;
     }
 
-    // --- NEW SOLUTION: AGGRESSIVE POLLING ---
-    // Since the previous screen no longer passes a tripId, this screen is now
-    // responsible for finding it. We will poll the backend until the active_trip_id appears.
+    // The tripId is now passed directly from the router after the TripService confirms its creation.
     debugPrint("[DriverDashboard] 1. DETERMINING TRIP ID...");
-    debugPrint("  > Checking for tripId from router 'extra': ${widget.tripId}");
+    debugPrint("  > TripId from router path parameter: ${widget.tripId}");
 
-    String? tripId;
-    int attempts = 0;
-    const maxAttempts = 10; // Poll for up to 10 seconds
-    const pollInterval = Duration(seconds: 1);
-
-    while (tripId == null && attempts < maxAttempts) {
-      attempts++;
-      debugPrint("[DriverDashboard] Polling for active trip... Attempt $attempts/$maxAttempts");
-      tripId = await TripService.checkForActiveTrip(authState.token!);
-      if (tripId == null) {
-        await Future.delayed(pollInterval);
-      }
-    }
-
-    if (tripId != null) {
-      debugPrint("[DriverDashboard] Polling successful! Found active_trip_id: '$tripId' after $attempts attempts.");
-    }
-
-    debugPrint("  > Final tripId to be used: '$tripId'");
+    final String? tripId = widget.tripId;
 
     if (tripId == null) {
       setState(() {
-        _errorMessage = "Failed to find an active trip after starting. Please go back and try again.";
+        _errorMessage = "Could not identify the active trip. Please return to the home screen.";
         _isLoading = false;
       });
-      debugPrint("[DriverDashboard] X FAILED: Could not determine an active trip ID after $maxAttempts attempts. Aborting.");
+      debugPrint("--- [DriverDashboard] Initialization End (Failure) ---\n");
+      debugPrint("[DriverDashboard] X FAILED: The tripId passed to the dashboard was null. Aborting.");
       return;
     }
 
@@ -154,6 +137,7 @@ class _DriverDashboardScreenState extends State<DriverDashboardScreen> {
     });
 
     // Check for location permissions before proceeding.
+    debugPrint("--- [DriverDashboard] Initialization End (Success) ---\n");
     await _checkLocationPermission();
   }
 

@@ -70,6 +70,12 @@ class AppRouter {
           if (isLoggingIn) {
             return '/driver/home'; // Always go to home after login.
           }
+
+          // If driver is authenticated but hasn't completed onboarding,
+          // force them to the onboarding screen from anywhere.
+          if (authState.driverInfo?.onboardingComplete == false && currentLocation != '/driver/onboarding') {
+            return '/driver/onboarding';
+          }
         } else if (authState.role == UserRole.rider) {
           // Rule 2c: If they are a rider and on an auth page, send them to their home.
           if (isLoggingIn) return '/rider/home';

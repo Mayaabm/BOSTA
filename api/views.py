@@ -476,14 +476,24 @@ def get_driver_profile(request):
         active_trip_id = latest_trip.id if latest_trip and latest_trip.status in [Trip.STATUS_PENDING, Trip.STATUS_STARTED] else None
         print(f"[DEBUG get_driver_profile] active_trip_id={active_trip_id}")
 
+        # --- FIX: Dynamically determine if the profile is complete ---
+        # A profile is complete if the user has a name, phone, and an assigned bus with a plate.
+        is_complete = all([
+            user.first_name,
+            user.last_name,
+            driver_profile.phone_number,
+            bus and bus.plate_number
+        ])
+
         route_serializer = RouteSerializer(route) if route else None
 
         return Response({
             "driver_name": user.get_full_name() or user.username,
+            "phone_number": str(driver_profile.phone_number) if driver_profile.phone_number else None,
             "bus": BusNearbySerializer(bus).data if bus else None,
             "route": route_serializer.data if route_serializer else None,
-            # This tells the frontend if there's a trip ready to be started or resumed.
             "active_trip_id": active_trip_id,
+            "onboarding_complete": is_complete, # Return the calculated status
         })
     except CustomUserProfile.DoesNotExist:
         return Response({"error": "Driver profile not found for this user."}, status=404)
@@ -517,14 +527,18 @@ def driver_onboard(request):
     bus_capacity = request.data.get('bus_capacity')
     route_id = request.data.get('route_id')
 
-    # Update user name / profile phone if given
+    # --- FIX: Update user and profile information separately to ensure saves are atomic ---
+
+    # Update user's name if provided
     if first_name or last_name:
         user.first_name = first_name
         user.last_name = last_name
         user.save(update_fields=['first_name', 'last_name'])
 
+    # Update profile's phone number if provided
     if phone:
-        profile.current_location = profile.current_location  # no-op placeholder; keep profile save below if needed
+        profile.phone_number = phone
+        profile.save(update_fields=['phone_number'])
 
     # Create or attach Bus if plate provided
     bus = None
@@ -547,54 +561,135 @@ def driver_onboard(request):
             logger.exception("driver_onboard: failed to create/assign bus %s for user %s", bus_plate, user.username)
             return Response({"error": "failed", "message": "Could not create or assign bus."}, status=500)
 
-    # Optionally create a Trip if route_id provided and bus exists
-    trip_obj = None
-    if route_id and bus:
-        try:
-            # First, end any previously active trips for this bus
-            active_trips = Trip.objects.filter(bus=bus, status=Trip.STATUS_STARTED)
-            for trip in active_trips:
-                trip.status = Trip.STATUS_FINISHED
-                trip.finished_at = timezone.now()
-                trip.save(update_fields=['status', 'finished_at'])
-                logger.warning("driver_onboard: ended previous trip %s for bus %s", trip.id, bus.id)
-            
-            route = Route.objects.get(pk=route_id)
-            # Create a trip starting now with minimal required fields
-            trip_obj = Trip.objects.create(bus=bus, route=route, departure_time=timezone.now())
-            print(f"[DEBUG driver_onboard] Created trip {trip_obj.id} for bus {bus.id}")
-        except Route.DoesNotExist:
-            print(f"[DEBUG driver_onboard] Route {route_id} not found!")
-            return Response({"error": "invalid_route", "message": "Provided route_id does not exist."}, status=400)
-        except Exception as e:
-            print(f"[DEBUG driver_onboard] Failed to create trip: {e}")
-            logger.exception("driver_onboard: failed to create trip for bus %s and route %s", bus_plate, route_id)
-            return Response({"error": "failed", "message": "Could not create trip for bus."}, status=500)
-
-    # If a trip was created, mark it as pending but do NOT auto-start simulation here.
-    # Trips should be explicitly started via the `start_trip` endpoint so drivers
-    # control when a trip moves from pending -> started. This avoids the frontend
-    # seeing "Trip already started" when a user finishes onboarding then presses
-    # the Start button.
-    if trip_obj:
-        try:
-            trip_obj.status = Trip.STATUS_PENDING
-            trip_obj.save(update_fields=['status'])
-            logger.info(f"driver_onboard: created trip {trip_obj.id} and set to PENDING for bus {bus.id}")
-        except Exception:
-            logger.exception(f"driver_onboard: could not set trip {trip_obj.id} to PENDING")
+    # --- REFACTOR: Remove trip creation logic from onboarding. ---
+    # The `driver_onboard` view should only be responsible for updating the driver's
+    # profile and bus information. Trip creation is now handled exclusively by the
+    # `create_and_start_trip` endpoint, making the logic much cleaner.
+    latest_trip = Trip.objects.filter(bus=bus).order_by('-departure_time').first() if bus else None
 
     # Return collected onboarding result
     data = {
         "driver_name": user.get_full_name() or user.username,
         "bus": BusNearbySerializer(bus).data if bus else None,
-        "route": RouteSerializer(route).data if (trip_obj and trip_obj.route) else None,
-        "trip_id": str(trip_obj.id) if trip_obj else None,
-        "active_trip_id": str(trip_obj.id) if trip_obj else None,  # Include for consistency with get_driver_profile
+        "route": RouteSerializer(latest_trip.route).data if (latest_trip and latest_trip.route) else None,
+        "trip_id": None, # This endpoint no longer creates trips
+        "active_trip_id": None,
     }
 
     return Response(data)
 
+@api_view(['POST'])
+@permission_classes([IsAuthenticated])
+def create_and_start_trip(request):
+    """
+    Creates a new trip based on the driver's assigned route and selected stops,
+    and immediately returns the new trip ID. This is the primary endpoint for
+    the 'Start Trip' button.
+    """
+    user = request.user
+    try:
+        profile = user.profile
+        if not profile.is_driver:
+            return Response({"error": "User is not a driver."}, status=status.HTTP_403_FORBIDDEN)
+
+        bus = Bus.objects.filter(driver=profile).first()
+        if not bus:
+            return Response({"error": "No bus is assigned to this driver."}, status=status.HTTP_400_BAD_REQUEST)
+
+        # The route is derived from the latest trip or driver's assignment, not passed in.
+        latest_trip_for_route = Trip.objects.filter(bus=bus).order_by('-departure_time').first()
+        route = latest_trip_for_route.route if latest_trip_for_route else None
+
+        if not route:
+            return Response({"error": "No route is assigned to this bus."}, status=status.HTTP_400_BAD_REQUEST)
+
+        # End any previously active trips for this bus to prevent duplicates.
+        Trip.objects.filter(bus=bus, status=Trip.STATUS_STARTED).update(
+            status=Trip.STATUS_FINISHED,
+            finished_at=timezone.now()
+        )
+
+        # --- FIX: Create the new trip and immediately mark it as STARTED ---
+        # The name 'create_and_start_trip' implies the trip should be active
+        # immediately. This simplifies the frontend logic as it no longer needs
+        # to make a separate call to start the trip from the dashboard.
+        new_trip = Trip.objects.create(
+            bus=bus,
+            route=route,
+            departure_time=timezone.now(),
+            started_at=timezone.now(),
+            status=Trip.STATUS_STARTED # Start as active
+        )
+
+        # --- FIX: Spawn the background simulator right away ---
+        # Since the trip is now started, we should also begin the simulation
+        # immediately, just as the dedicated `start_trip` view does.
+        # We can reuse the `_start_trip_simulation` helper function for this.
+        try:
+            from .views import _start_trip_simulation # Local import to avoid circular dependency issues
+            simulation_thread = threading.Thread(target=_start_trip_simulation, args=(new_trip.id,), daemon=True)
+            simulation_thread.start()
+            logger.info(f"create_and_start_trip: Spawned simulation for new trip {new_trip.id}")
+        except Exception as e:
+            logger.error(f"create_and_start_trip: Failed to spawn simulation thread for trip {new_trip.id}: {e}")
+
+        logger.info(f"create_and_start_trip: Created Trip ID {new_trip.id} for Bus {bus.id} on Route {route.name}")
+        return Response({"trip_id": new_trip.id}, status=status.HTTP_201_CREATED)
+
+    except CustomUserProfile.DoesNotExist:
+        return Response({"error": "Driver profile not found."}, status=status.HTTP_404_NOT_FOUND)
+    except Exception as e:
+        logger.exception("create_and_start_trip: An unexpected error occurred.")
+        return Response({"error": str(e)}, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
+
+def _start_trip_simulation(trip_pk, speed=10.0, interval=2.0):
+    """
+    Helper function to run the trip simulation in a background thread.
+    Can be called from any view that needs to start a simulation.
+    """
+    try:
+        t = Trip.objects.select_related('route', 'bus').get(pk=trip_pk)
+        route = t.route
+        bus = t.bus
+        if not route or not bus:
+            logger.error(f"Cannot simulate trip {trip_pk}: missing route or bus.")
+            return
+
+        # Set initial location immediately to prevent race conditions
+        if route.geometry:
+            initial_point = route.geometry.interpolate_normalized(0)
+            bus.current_location = initial_point
+            bus.last_reported_at = dj_timezone.now()
+            bus.save(update_fields=['current_location', 'last_reported_at'])
+            logger.info(f"_start_trip_simulation: Set initial location for bus {bus.id} to start of route {route.id}")
+
+        coords = list(route.geometry.coords)
+        points = [Point(c[0], c[1], srid=4326) for c in coords]
+        
+        for i in range(len(points)):
+            point = points[i]
+            lon, lat = point.x, point.y
+
+            heading = None
+            if i < len(points) - 1:
+                nlon, nlat = points[i + 1].x, points[i + 1].y
+                dy = nlat - lat
+                dx = nlon - lon
+                heading = math.degrees(math.atan2(dy, dx))
+
+            VehiclePosition.objects.create(bus=bus, location=point, heading_deg=heading, speed_mps=speed)
+            bus.current_location = point
+            bus.last_reported_at = dj_timezone.now()
+            bus.save(update_fields=['current_location', 'last_reported_at'])
+
+            time.sleep(interval)
+
+        t.status = Trip.STATUS_FINISHED
+        t.finished_at = dj_timezone.now()
+        t.save(update_fields=['status', 'finished_at'])
+        logger.info(f"Simulation for trip {t.id} finished.")
+    except Exception:
+        logger.exception(f"_start_trip_simulation: unexpected error in background simulator for trip {trip_pk}")
 
 @api_view(['POST'])
 def register_user(request):
@@ -637,16 +732,29 @@ def register_user(request):
             user.last_name = last_name
             user.save(update_fields=['first_name', 'last_name'])
 
-        # Create the associated profile with the correct role
-        CustomUserProfile.objects.create(
+        # Create the associated profile
+        profile = CustomUserProfile.objects.create(
             user=user,
             is_driver=(role == 'driver'),
             is_commuter=(role == 'rider')
         )
 
-        # Note: driver registration only creates the account/profile.
-        # Bus, trips, routes and stops should be managed separately via
-        # driver onboarding endpoints. We intentionally do not create a Bus here.
+        # --- FIX: Handle bus creation during driver registration ---
+        if role == 'driver':
+            bus_plate = (request.data.get('bus_plate_number') or '').strip()
+            bus_capacity = request.data.get('bus_capacity')
+            if bus_plate:
+                try:
+                    # Create a new bus and assign it to the new driver's profile.
+                    Bus.objects.create(
+                        plate_number=bus_plate,
+                        capacity=int(bus_capacity) if bus_capacity else 30,
+                        driver=profile
+                    )
+                    logger.info(f"register_user: Created bus {bus_plate} for new driver {user.username}")
+                except Exception as e:
+                    # Log the error but don't fail the registration. The user can add the bus later.
+                    logger.error(f"register_user: Failed to create bus during registration for {user.username}. Reason: {e}")
 
         # Generate JWT tokens for the new user for immediate login
         try:
@@ -734,55 +842,8 @@ def start_trip(request, trip_id):
         trip.bus.save(update_fields=['current_location', 'last_reported_at'])
         logger.info(f"start_trip: Set initial location for bus {trip.bus.id} to start of route {trip.route.id}")
 
-    # Spawn a background simulation thread to create VehiclePosition points
-    def _simulate_trip(trip_pk, speed=10.0, interval=2.0):
-        try:
-            t = Trip.objects.select_related('route', 'bus').get(pk=trip_pk)
-            route = t.route
-            bus = t.bus
-            if not route or not bus:
-                logger.error(f"Cannot simulate trip {trip_pk}: missing route or bus.")
-                return
-
-            coords = list(route.geometry.coords)
-            points = [Point(c[0], c[1], srid=4326) for c in coords]
-            start_index = 0
-
-            for i in range(start_index, len(points)):
-                point = points[i]
-                lon, lat = point.x, point.y
-
-                heading = None
-                if i < len(points) - 1:
-                    nlon, nlat = points[i + 1].x, points[i + 1].y
-                    dy = nlat - lat
-                    dx = nlon - lon
-                    heading = math.degrees(math.atan2(dy, dx))
-
-                vp = VehiclePosition.objects.create(
-                    bus=bus,
-                    location=Point(lon, lat, srid=4326),
-                    heading_deg=heading,
-                    speed_mps=speed,
-                )
-                # --- FIX: Update the main Bus model as well ---
-                # This ensures the bus is visible to the buses_nearby endpoint.
-                bus.current_location = vp.location
-                bus.last_reported_at = dj_timezone.now()
-                bus.save(update_fields=['current_location', 'last_reported_at'])
-
-                time.sleep(interval)
-
-            # Mark trip finished
-            t.status = Trip.STATUS_FINISHED
-            t.finished_at = dj_timezone.now()
-            t.save(update_fields=['status', 'finished_at'])
-            logger.info(f"Simulation for trip {t.id} finished.")
-
-        except Exception:
-            logger.exception(f"start_trip: unexpected error in background simulator for trip {trip_pk}")
-
-    simulation_thread = threading.Thread(target=_simulate_trip, args=(trip.id,), daemon=True)
+    # --- REFACTOR: Use the centralized simulation helper ---
+    simulation_thread = threading.Thread(target=_start_trip_simulation, args=(trip.id,), daemon=True)
     simulation_thread.start()
 
     return Response({"status": "started", "trip_id": str(trip.id)})

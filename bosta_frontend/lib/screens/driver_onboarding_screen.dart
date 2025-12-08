@@ -95,7 +95,10 @@ class _DriverOnboardingScreenState extends State<DriverOnboardingScreen> {
         _generalErrorMessage = error;
       });
       if (error == null) {
-        ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('Personal info saved!')));
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(content: Text('Personal info saved!'), duration: Duration(seconds: 2)),
+        );
+        // No navigation needed, just show confirmation.
       }
     }
   }
@@ -114,7 +117,9 @@ class _DriverOnboardingScreenState extends State<DriverOnboardingScreen> {
         _generalErrorMessage = error;
       });
       if (error == null) {
-        ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('Vehicle info saved!')));
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(content: Text('Vehicle info saved!'), duration: Duration(seconds: 2)),
+        );
       }
     }
   }
@@ -124,13 +129,6 @@ class _DriverOnboardingScreenState extends State<DriverOnboardingScreen> {
     // Validate all forms
     final bool personalValid = _personalInfoFormKey.currentState?.validate() ?? false;
     final bool vehicleValid = _vehicleInfoFormKey.currentState?.validate() ?? false;
-
-    if (!personalValid || !vehicleValid) {
-      setState(() {
-        _generalErrorMessage = 'Please fill all required fields in all sections.';
-      });
-      return;
-    }
 
     // Safely capture the required values after validation.
     setState(() => _isLoading = true); // Global loading for initial setup
@@ -273,19 +271,6 @@ class _DriverOnboardingScreenState extends State<DriverOnboardingScreen> {
                 isSaving: _isSavingVehicleInfo,
               ),
 
-              // Documents Section (Placeholder)
-              _buildSection(
-                title: 'Documents (Upload)',
-                formKey: GlobalKey<FormState>(), // Dummy form key for now
-                children: [
-                  Text('This section is under development. You will be able to upload your driver\'s license and bus registration here.', style: GoogleFonts.urbanist(color: Colors.grey[400])),
-                ],
-                onSave: () {
-                  ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('Document upload not yet implemented.')));
-                },
-                isSaving: false,
-              ),
-
               const SizedBox(height: 20),
               if (_generalErrorMessage != null)
                   Padding(
@@ -312,13 +297,10 @@ class _DriverOnboardingScreenState extends State<DriverOnboardingScreen> {
                   // --- FIX: Use pop() instead of go() ---
                   // This returns to the previous screen (DriverHomeScreen) which is waiting
                   // for the onboarding to complete. Using go() creates a new instance of
-                  // the home screen, leaving the old one stuck in a loading state.
-                  onPressed: () {
-                    // --- FIX: Handle both navigation scenarios ---
-                    // If we can pop (i.e., we came from another screen like DriverHome), we pop.
-                    // If we can't (i.e., we were redirected here directly after login), we go to the home screen.
+              // the home screen, which is not the desired behavior.
+                  onPressed: () {                    
                     if (GoRouter.of(context).canPop()) {
-                      GoRouter.of(context).pop();
+                      context.pop();
                     } else {
                       GoRouter.of(context).go('/driver/home');
                     }

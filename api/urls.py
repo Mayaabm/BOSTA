@@ -19,6 +19,7 @@ urlpatterns = [
     path('driver/onboard/', views.driver_onboard, name='driver_onboard'),
     path('driver/me/', views.get_driver_profile, name='get_driver_profile'), # Correctly reference the function view
     path('trips/<str:trip_id>/start/', views.start_trip, name='start_trip'),
+    path('trips/create_and_start/', views.create_and_start_trip, name='create_and_start_trip'),
     path('trips/<str:trip_id>/end/', views.EndTripView.as_view(), name='trip-end'),
     # Dev-only endpoint for mock rider location
     path('dev/rider_location/', views.get_dev_rider_location, name='get_dev_rider_location'),

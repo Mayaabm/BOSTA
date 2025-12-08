@@ -26,8 +26,12 @@ class _DriverHomeScreenState extends State<DriverHomeScreen> {
     debugPrint("\n\n[DriverHomeScreen] >>>>>>>>>> STARTING 'startNewTrip' PROCESS <<<<<<<<<<");
     // If a trip is already active, just navigate to the dashboard.
     final authService = Provider.of<AuthService>(context, listen: false);
-    if (authService.rawDriverProfile?['active_trip_id'] != null) {
-      GoRouter.of(context).go('/driver/dashboard');
+    final activeTripIdFromState = authService.rawDriverProfile?['active_trip_id']?.toString();
+    if (activeTripIdFromState != null && mounted) {
+      // --- FIX: If a trip is already active, navigate to its dashboard correctly. ---
+      // The previous logic was missing the trip ID in the navigation path.
+      debugPrint("[DriverHomeScreen] Active trip '$activeTripIdFromState' detected. Navigating directly to dashboard.");
+      GoRouter.of(context).go('/driver/dashboard/$activeTripIdFromState'); // This is the correct navigation
       return;
     }
 
@@ -67,21 +71,15 @@ class _DriverHomeScreenState extends State<DriverHomeScreen> {
 
     // If onboarding isn't complete, guide the user to the edit screen first.
     if (authState.driverInfo?.onboardingComplete == false) {
-      debugPrint("[DriverHomeScreen] Onboarding is not complete. Navigating to edit profile screen.");
-      ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(content: Text("Please complete your profile to continue.")),
-      );
-      // --- FIX: Navigate and wait for a result ---
-      // We navigate to the onboarding screen. When we come back, we check if the
-      // profile is now complete. If so, we re-run this function to proceed with the trip.
-      final result = await GoRouter.of(context).push('/driver/onboarding?edit=true');
-
-      // After returning, re-check and re-trigger if necessary.
-      if (mounted && Provider.of<AuthService>(context, listen: false).currentState.driverInfo?.onboardingComplete == true) {
-        debugPrint("[DriverHomeScreen] Returned from onboarding. Profile is now complete. Re-initiating trip start.");
-        _startNewTrip(); // Re-run the process
-      }
-      return; // Stop the current execution
+      setState(() {
+        // --- FIX: Do not navigate away. Show an error and stop. ---
+        // The previous logic caused a navigation conflict and a disposed context error.
+        // The user can use the existing "Edit Profile" button in the AppBar.
+        _errorMessage = "Your profile is incomplete. Please use the 'Edit Profile' button to provide your name, phone, and bus details.";
+        _isLoading = false;
+      });
+      debugPrint("[DriverHomeScreen] X FAILED: Onboarding is not complete. Aborting trip start.");
+      return;
     }
 
     // --- VALIDATION ---
@@ -97,19 +95,19 @@ class _DriverHomeScreenState extends State<DriverHomeScreen> {
 
     try {
       debugPrint("[DriverHomeScreen] 2. CALLING SERVICE: All checks passed. Calling TripService.startNewTrip...");
-      // --- NEW SOLUTION: Use a dedicated service method to "fire-and-forget" the trip creation request.
-      // We no longer expect a trip ID in return from this call.
-      await TripService.startNewTrip(
-        token,
+      // --- FIX: The service now returns the created trip ID directly. ---
+      final newTripId = await TripService.startNewTrip(
+        authService,
         startStopId: authState.selectedStopId,
         endStopId: authState.selectedEndStopId,
       );
 
-      debugPrint("[DriverHomeScreen] 3. SERVICE SUCCEEDED: Trip creation request sent successfully.");
-      // --- NEW SOLUTION: Navigate to the dashboard without any 'extra' data.
-      // The dashboard itself will now be responsible for finding the active trip.
-      debugPrint("[DriverHomeScreen] 4. NAVIGATING: Calling GoRouter.go('/driver/dashboard').");
-      GoRouter.of(context).go('/driver/dashboard');
+      debugPrint("[DriverHomeScreen] 3. SERVICE SUCCEEDED: Created trip with ID: $newTripId");
+      // --- FIX: Navigate to the dashboard, passing the new trip ID as a parameter. ---
+      final destinationUrl = '/driver/dashboard/$newTripId';
+      debugPrint("[DriverHomeScreen] 4. NAVIGATING: Preparing to navigate to: $destinationUrl");
+      if (!mounted) return; // Guard against disposed context
+      GoRouter.of(context).go('/driver/dashboard/$newTripId');
     } catch (e) {
       debugPrint("[DriverHomeScreen] X CATASTROPHIC FAILURE: The 'startNewTrip' process threw an exception.");
       debugPrint("  > Exception: $e");
@@ -182,22 +180,23 @@ class _DriverHomeScreenState extends State<DriverHomeScreen> {
   }
 
   // New method to handle saving the trip setup
-  Future<void> _saveTripSetup(String? startStopId, String? endStopId) async {
+  Future<void> _saveTripSetup() async {
+    // Only save if there are actual changes to be made.
+    if (_selectedStartStopId == null || _selectedEndStopId == null) {
+      setState(() => _errorMessage = "Both start and end stops must be selected.");
+      return;
+    }
+
     setState(() => _isSavingTripSetup = true);
     final authService = Provider.of<AuthService>(context, listen: false);
-    final error = await authService.patchDriverProfile({
-      'selected_start_stop_id': startStopId,
-      'selected_end_stop_id': endStopId,
-    });
+    // Use the new, dedicated method for saving trip setup
+    final error = await authService.saveTripSetup(
+        startStopId: _selectedStartStopId!, endStopId: _selectedEndStopId!);
 
     if (mounted) {
       setState(() {
         _isSavingTripSetup = false;
-        if (error != null) {
-          _errorMessage = "Failed to save trip setup: $error";
-        } else {
-          _errorMessage = null; // Clear previous errors on success
-        }
+        _errorMessage = error != null ? "Failed to save trip setup: $error" : null;
       });
     }
   }
@@ -297,7 +296,6 @@ class _DriverHomeScreenState extends State<DriverHomeScreen> {
                             currentValue: _selectedStartStopId,
                             onChanged: (value) {
                               setState(() => _selectedStartStopId = value);
-                              _saveTripSetup(value, _selectedEndStopId);
                             },
                           ),
                           const SizedBox(height: 12),
@@ -309,10 +307,19 @@ class _DriverHomeScreenState extends State<DriverHomeScreen> {
                             currentValue: _selectedEndStopId,
                             onChanged: (value) {
                               setState(() => _selectedEndStopId = value);
-                              _saveTripSetup(_selectedStartStopId, value);
                             },
                           ),
-                          if (_isSavingTripSetup) const Padding(padding: EdgeInsets.only(top: 8.0), child: Center(child: LinearProgressIndicator())),
+                          const SizedBox(height: 20),
+                          // Save Button for Trip Setup
+                          if (_isSavingTripSetup)
+                            const Center(child: CircularProgressIndicator())
+                          else
+                            Center(
+                              child: ElevatedButton(
+                                onPressed: _saveTripSetup,
+                                child: const Text('Save Trip Setup'),
+                              ),
+                            ),
                         ],
                       ),
                     ),

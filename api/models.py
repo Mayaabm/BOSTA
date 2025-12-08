@@ -1,10 +1,12 @@
 # api/models.py
 from django.contrib.gis.db import models  # this is key
 from django.contrib.auth.models import User
+from phonenumber_field.modelfields import PhoneNumberField
 
 
 class CustomUserProfile(models.Model):
     user = models.OneToOneField(User, on_delete=models.CASCADE, related_name="profile")
+    phone_number = PhoneNumberField(blank=True, help_text='Contact phone number')
     current_location = models.PointField(srid=4326, null=True, blank=True)
     destination = models.PointField(srid=4326, null=True, blank=True)
     is_driver = models.BooleanField(default=False)

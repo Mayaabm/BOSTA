@@ -21,6 +21,8 @@ class ApiEndpoints {
   static String get busesToDestination => '$base/buses/to_destination/';
   static String busDetails(String busId) => '$base/buses/$busId/';
   static String get allRoutes => '$base/routes/';
+  static String get createAndStartTrip => '$base/trips/create_and_start/';
+
   static String routeDetails(String routeId) => '$base/routes/$routeId/';
 
   // --- Trip Management ---

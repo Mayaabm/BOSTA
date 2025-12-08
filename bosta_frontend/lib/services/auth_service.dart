@@ -184,10 +184,16 @@ class AuthService extends ChangeNotifier {
 
       debugPrint("[AuthService] fetchAndSetDriverProfile: Profile fetch took ${stopwatch.elapsedMilliseconds}ms. Status: ${response.statusCode}");
       if (response.statusCode == 200) {
-        debugPrint("[AuthService] fetchAndSetDriverProfile: Received 200 OK. Response body: ${response.body}");
         final data = json.decode(response.body);
-        debugPrint("[AuthService] fetchAndSetDriverProfile: Raw JSON data from /api/driver/me/: $data");
-        debugPrint("[AuthService] fetchAndSetDriverProfile: Parsing profile data...");
+        // --- FIX: Log the response but exclude the noisy geometry data ---
+        final loggableData = Map<String, dynamic>.from(data);
+        if (loggableData['route'] != null && loggableData['route'] is Map) {
+          final routeForLogging = Map<String, dynamic>.from(loggableData['route']);
+          routeForLogging.remove('geometry');
+          loggableData['route'] = routeForLogging;
+        }
+        debugPrint("[AuthService] fetchAndSetDriverProfile: Received 200 OK. Parsed data (geometry excluded): $loggableData");
+
         final busId = data['bus'] != null ? (data['bus']['id']?.toString() ?? '') : '';
         final routeId = data['route'] != null ? (data['route']['id']?.toString() ?? '') : '';
         final driverName = data['driver_name'] ?? '';
@@ -195,7 +201,7 @@ class AuthService extends ChangeNotifier {
         final firstName = nameParts.isNotEmpty ? nameParts.first : '';
         final lastName = nameParts.length > 1 ? nameParts.sublist(1).join(' ') : '';
         final username = data['bus'] != null ? (data['bus']['plate_number'] ?? '') : '';
-        final phoneNumber = data['phone_number'] ?? ''; // Assuming backend provides this
+        final phoneNumber = data['phone_number']?.toString() ?? ''; // Correctly parse from the top-level
         final busPlateNumber = data['bus'] != null ? (data['bus']['plate_number'] ?? '') : '';
         final busCapacity = data['bus'] != null ? (data['bus']['capacity'] as int?) : null;
         final email = data['bus'] != null ? (data['bus']['driver_email'] ?? '') : '';
@@ -255,9 +261,7 @@ class AuthService extends ChangeNotifier {
         // Store the raw response JSON so callers can access top-level fields
         // that aren't yet represented in AuthState (e.g., active_trip_id).
         final rawProfile = data is Map<String, dynamic> ? data : null;
-        debugPrint("[AuthService] Stored raw driver profile: $rawProfile");
         debugPrint("[AuthService] >> active_trip_id from raw profile GET response: ${rawProfile?['active_trip_id']}");
-        debugPrint("[AuthService] Raw profile keys: ${rawProfile?.keys.toList()}");
         
         _state = AuthState(
           isAuthenticated: true,
@@ -270,11 +274,11 @@ class AuthService extends ChangeNotifier {
           // This ensures that when we patch the profile, the new values are immediately reflected
           // in the state, even if the backend GET response hasn't caught up yet.
           selectedStopId: () {
-            final id = selectedStopId ?? data['selected_start_stop_id']?.toString();
+            final id = data['selected_start_stop_id']?.toString() ?? selectedStopId;
             debugPrint("[AuthService] Parsed 'selected_start_stop_id': $id");
             return id;
           }(),
-          selectedEndStopId: selectedEndStopId ?? data['selected_end_stop_id']?.toString(),
+          selectedEndStopId: data['selected_end_stop_id']?.toString() ?? selectedEndStopId,
           selectedStartTime: selectedStartTime ?? data['selected_start_time']?.toString(),
           // Preserve lat/lon if they were set from a map tap, as they might not be in the response.
           selectedStartLat: selectedStartLat ?? _state.selectedStartLat,
@@ -305,11 +309,11 @@ class AuthService extends ChangeNotifier {
     }
   }
 
-  /// Sends partial updates to the driver's profile using a PATCH request.
-  /// Returns null on success, or an error message on failure.
-  Future<String?> patchDriverProfile(Map<String, dynamic> data, {bool createNewTrip = false}) async {
+  /// Updates the driver's profile information (e.g., name, phone number).
+  /// This method is for updating user data, NOT for trip management.
+  Future<String?> patchDriverProfile(Map<String, dynamic> data) async {
     final stopwatch = Stopwatch()..start(); // For performance monitoring
-
+  
     final accessToken = _state.token;
     if (accessToken == null) {
       return "Authentication token not found. Please log in again.";
@@ -317,18 +321,14 @@ class AuthService extends ChangeNotifier {
 
     // If this patch is intended to set up a new trip, add a flag for the backend.
     final requestData = Map<String, dynamic>.from(data);
-    if (createNewTrip) {
-      requestData['create_new_trip'] = true;
-    }
 
     // The backend uses the same 'onboard' endpoint for both initial setup and updates.
     // It expects a POST request, not a PATCH or PUT on /driver/me/.
     final uri = Uri.parse(ApiEndpoints.driverOnboard);
     debugPrint("======================================================================");
-    debugPrint("[AuthService.patchDriverProfile] Initiating trip creation/profile patch.");
+    debugPrint("[AuthService.patchDriverProfile] Initiating profile patch.");
     debugPrint("  > Endpoint: $uri");
-    debugPrint("  > createNewTrip flag: $createNewTrip");
-    debugPrint("[AuthService] patchDriverProfile: Sending POST to $uri with data: ${json.encode(requestData)}");
+    debugPrint("[AuthService] patchDriverProfile: Sending POST to $uri with data: ${json.encode(data)}");
     try {
       // Use http.post to match the backend's expectation for this endpoint.
       final response = await http.post(
@@ -337,7 +337,7 @@ class AuthService extends ChangeNotifier {
           'Content-Type': 'application/json',
           'Authorization': 'Bearer $accessToken',
         },
-        body: json.encode(requestData),
+        body: json.encode(data),
       );
 
       debugPrint("[AuthService] patchDriverProfile: Response status: ${response.statusCode}, body: ${response.body}");
@@ -345,87 +345,12 @@ class AuthService extends ChangeNotifier {
       debugPrint("======================================================================");
 
       if (response.statusCode == 200) {
-        // --- NEW SOLUTION: Smart State Update ---
-        // If we are NOT creating a new trip, we are just saving the start/end stops.
-        // In this case, we should NOT re-fetch the entire profile. Doing so wipes
-        // the state because the POST response is minimal.
-        // --- FIX: This optimization should ONLY apply if we are *only* saving stops.
-        // If other profile data is present, we must re-fetch.
-        final isSavingStopsOnly = data.keys.isNotEmpty && data.keys.every(
-            (k) => k == 'selected_start_stop_id' || k == 'selected_end_stop_id'
-        );
-
-        if (!createNewTrip && isSavingStopsOnly) {
-            debugPrint("[AuthService.patchDriverProfile] Saving stops only. Updating state locally without re-fetch.");
-            debugPrint("  > STATE BEFORE UPDATE: driverInfo is ${ _state.driverInfo != null ? 'PRESENT' : 'NULL'}, assignedRoute is ${_state.assignedRoute != null ? 'PRESENT' : 'NULL'}");
-            debugPrint("  > Updating selectedStopId to: ${data['selected_start_stop_id']?.toString()}");
-            debugPrint("  > Updating selectedEndStopId to: ${data['selected_end_stop_id']?.toString()}");
-
-            _state = AuthState(
-                // --- THE FIX: Ensure ALL properties are copied from the old state ---
-                isAuthenticated: _state.isAuthenticated,
-                role: _state.role,
-                driverInfo: _state.driverInfo, // Preserve existing driver info
-                assignedRoute: _state.assignedRoute, // Preserve existing route info
-                token: _state.token,
-                refreshToken: _state.refreshToken,
-                // Update only the changed fields
-                selectedStopId: data['selected_start_stop_id']?.toString(),
-                selectedEndStopId: data['selected_end_stop_id']?.toString(),
-                // Preserve all other fields
-                selectedStartTime: _state.selectedStartTime,
-                selectedStartLat: _state.selectedStartLat,
-                selectedStartLon: _state.selectedStartLon,
-                initialBusPosition: _state.initialBusPosition,
-                phoneNumber: _state.phoneNumber,
-                busPlateNumber: _state.busPlateNumber,
-                busCapacity: _state.busCapacity,
-                lastCreatedTripId: _state.lastCreatedTripId,
-                rawDriverProfile: _state.rawDriverProfile,
-            );
-            notifyListeners();
-            debugPrint("  > STATE AFTER UPDATE: driverInfo is ${ _state.driverInfo != null ? 'PRESENT' : 'NULL'}, assignedRoute is ${_state.assignedRoute != null ? 'PRESENT' : 'NULL'}");
-            debugPrint("[AuthService.patchDriverProfile] State updated with new stops. Returning success.");
-            return null; // <-- CRITICAL FIX: Exit the function here.
-          }
-
-        // --- EXISTING LOGIC for createNewTrip=true ---
-        // This part only runs when the "Start Trip" button is pressed.
-        final responseData = json.decode(response.body);
-        final newTripId = responseData['trip_id']?.toString();
-        
-        // --- LOGIC FOR createNewTrip=true OR for general profile updates ---
-        // If we are creating a new trip, the backend MUST return the new trip_id.
-        // We pass this ID to the state update to avoid race conditions.
         debugPrint("[AuthService] patchDriverProfile: POST successful. Now re-fetching the full profile to get the latest state...");
-        // --- FIX: When re-fetching after a general profile update, we must NOT pass old/stale stop IDs.
-        // Passing null for the stop IDs ensures that fetchAndSetDriverProfile uses the values from the backend
-        // or preserves the existing state, preventing the new profile data from being overwritten.
-        String? fetchError = await fetchAndSetDriverProfile(
-          lastCreatedTripId: newTripId, // Pass the new trip ID to the state
-        );
-
-        // If we were creating a trip and the re-fetch *still* didn't see the active_trip_id,
-        // it's a race condition. Wait a moment and try one more time.
-        // Also check if the newTripId from the POST response is available.
-        if (createNewTrip && newTripId != null && _state.rawDriverProfile?['active_trip_id'] == null) {
-          debugPrint("!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!");
-          debugPrint("[AuthService] RACE CONDITION DETECTED. active_trip_id is null after first fetch.");
-          debugPrint("[AuthService] Waiting 1 second and re-fetching...");
-          debugPrint("!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!");
-          await Future.delayed(const Duration(seconds: 1));
-          // --- DEFINITIVE FIX: When re-fetching due to a race condition, do NOT pass any parameters. ---
-          // Passing any parameters was causing the state to be partially overwritten.
-          // A clean fetch gets the true state from the backend.
-          fetchError = await fetchAndSetDriverProfile(token: accessToken, refreshToken: _state.refreshToken);
-        }
-
+        final fetchError = await fetchAndSetDriverProfile();
         if (fetchError != null) {
           debugPrint("[AuthService] patchDriverProfile: Error re-fetching profile after patch: $fetchError");
         }
-
-        // If we were creating a trip, return the new trip ID. Otherwise, return null for success.
-        return createNewTrip ? newTripId : null;
+        return null; // Success
       } else {
         // Provide a more detailed error message for debugging
         debugPrint("[AuthService] patchDriverProfile: Error. Status: ${response.statusCode}.");
@@ -439,6 +364,63 @@ class AuthService extends ChangeNotifier {
       return "An error occurred while updating the driver profile: $e";
     }
   }
+  
+  /// Saves the selected start and end stops for the upcoming trip.
+  /// This updates the local state immediately for a responsive UI and sends the update to the backend.
+  Future<String?> saveTripSetup({required String startStopId, required String endStopId}) async {
+    debugPrint("[AuthService.saveTripSetup] Saving trip setup: Start=$startStopId, End=$endStopId");
+
+    // 1. Optimistically update local state
+    _state = AuthState(
+        isAuthenticated: _state.isAuthenticated,
+        role: _state.role,
+        driverInfo: _state.driverInfo,
+        assignedRoute: _state.assignedRoute,
+        token: _state.token,
+        refreshToken: _state.refreshToken,
+        selectedStopId: startStopId, // Update
+        selectedEndStopId: endStopId, // Update
+        selectedStartTime: _state.selectedStartTime,
+        selectedStartLat: _state.selectedStartLat,
+        selectedStartLon: _state.selectedStartLon,
+        initialBusPosition: _state.initialBusPosition,
+        phoneNumber: _state.phoneNumber,
+        busPlateNumber: _state.busPlateNumber,
+        busCapacity: _state.busCapacity,
+        lastCreatedTripId: _state.lastCreatedTripId,
+        rawDriverProfile: _state.rawDriverProfile,
+    );
+    notifyListeners();
+
+    // 2. Send update to the backend
+    final accessToken = _state.token;
+    if (accessToken == null) return "Not authenticated.";
+
+    final uri = Uri.parse(ApiEndpoints.driverOnboard);
+    try {
+      final response = await http.post(
+        uri,
+        headers: {
+          'Content-Type': 'application/json',
+          'Authorization': 'Bearer $accessToken',
+        },
+        body: json.encode({
+          'selected_start_stop_id': startStopId,
+          'selected_end_stop_id': endStopId,
+        }),
+      );
+
+      if (response.statusCode == 200) {
+        debugPrint("[AuthService.saveTripSetup] Backend successfully updated.");
+        return null; // Success
+      } else {
+        final errorBody = response.body.isNotEmpty ? json.decode(response.body) : {};
+        return "Failed to save trip setup to backend. Status: ${response.statusCode}. Reason: ${errorBody['error'] ?? 'Unknown'}";
+      }
+    } catch (e) {
+      return "An error occurred while saving trip setup: $e";
+    }
+  }
 
   /// Registers a new user and logs them in.
   /// Returns an error message on failure, or null on success.
@@ -449,6 +431,8 @@ class AuthService extends ChangeNotifier {
     required UserRole role,
     String? firstName,
     String? lastName,
+    String? busPlateNumber,
+    int? busCapacity,
     String? phoneNumber,
   }) async {
     debugPrint("[AuthService] register: Attempting to register new ${role.name}: $email");
@@ -464,6 +448,10 @@ class AuthService extends ChangeNotifier {
       if (firstName != null && firstName.isNotEmpty) body['first_name'] = firstName;
       if (lastName != null && lastName.isNotEmpty) body['last_name'] = lastName;
       if (phoneNumber != null && phoneNumber.isNotEmpty) body['phone_number'] = phoneNumber;
+      if (role == UserRole.driver) {
+        if (busPlateNumber != null && busPlateNumber.isNotEmpty) body['bus_plate_number'] = busPlateNumber;
+        if (busCapacity != null) body['bus_capacity'] = busCapacity;
+      }
 
       final response = await http.post(
         uri,
