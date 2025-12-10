@@ -8,3 +8,4 @@ whitenoise # For serving static files
 
 # Optional for GIS support
 # psycopg2-binary is already listed; ensure GDAL/GEOS installed system-wide
+
