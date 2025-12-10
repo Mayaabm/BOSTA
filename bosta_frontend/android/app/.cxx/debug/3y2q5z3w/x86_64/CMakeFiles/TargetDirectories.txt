@@ -1,0 +1,2 @@
+C:/Users/mayab/.vscode/BOSTA/bosta_frontend/android/app/.cxx/debug/3y2q5z3w/x86_64/CMakeFiles/edit_cache.dir
+C:/Users/mayab/.vscode/BOSTA/bosta_frontend/android/app/.cxx/debug/3y2q5z3w/x86_64/CMakeFiles/rebuild_cache.dir

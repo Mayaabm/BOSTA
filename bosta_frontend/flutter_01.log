@@ -1,0 +1,75 @@
+Flutter crash report.
+Please report a bug at https://github.com/flutter/flutter/issues.
+
+## command
+
+flutter run -d chrome --web-port=3000
+
+## exception
+
+DartDevelopmentServiceException: DartDevelopmentServiceException: Failed to start Dart Development Service
+
+```
+```
+
+## flutter doctor
+
+```
+[32m[✓][39m Flutter (Channel stable, 3.35.3, on Microsoft Windows [Version 10.0.22631.6060], locale en-US) [1,141ms]
+    [32m•[39m Flutter version 3.35.3 on channel stable at C:\Users\mayab\src\flutter
+    [32m•[39m Upstream repository https://github.com/flutter/flutter.git
+    [32m•[39m Framework revision a402d9a437 (9 weeks ago), 2025-09-03 14:54:31 -0700
+    [32m•[39m Engine revision ddf47dd3ff
+    [32m•[39m Dart version 3.9.2
+    [32m•[39m DevTools version 2.48.0
+    [32m•[39m Feature flags: enable-web, enable-linux-desktop, enable-macos-desktop, enable-windows-desktop, enable-android,
+      enable-ios, cli-animations, enable-lldb-debugging
+
+[32m[✓][39m Windows Version (11 Home 64-bit, 23H2, 2009) [7.3s]
+
+[32m[✓][39m Android toolchain - develop for Android devices (Android SDK version 36.1.0) [9.8s]
+    [32m•[39m Android SDK at C:\Users\mayab\AppData\Local\Android\Sdk
+    [32m•[39m Emulator version 36.2.12.0 (build_id 14214601) (CL:N/A)
+    [32m•[39m Platform android-36, build-tools 36.1.0
+    [32m•[39m ANDROID_HOME = C:\Users\mayab\AppData\Local\Android\Sdk
+    [32m•[39m Java binary at: C:\Program Files\Android\Android Studio1\jbr\bin\java
+      This is the JDK bundled with the latest Android Studio installation on this machine.
+      To manually set the JDK path, use: `flutter config --jdk-dir="path/to/jdk"`.
+    [32m•[39m Java version OpenJDK Runtime Environment (build 21.0.8+-14018985-b1038.68)
+    [32m•[39m All Android licenses accepted.
+
+[32m[✓][39m Chrome - develop for the web [615ms]
+    [32m•[39m Chrome at C:\Program Files\Google\Chrome\Application\chrome.exe
+
+[33m[!][39m Visual Studio - develop Windows apps (Visual Studio Community 2022 17.10.1) [613ms]
+    [32m•[39m Visual Studio at C:\Program Files\Microsoft Visual Studio\2022\Community
+    [32m•[39m Visual Studio Community 2022 version 17.10.34928.147
+    [31m✗[39m Visual Studio is missing necessary components. Please re-run the Visual Studio installer for the "Desktop
+      development with C++" workload, and include these components:
+        MSVC v142 - VS 2019 C++ x64/x86 build tools
+         - If there are multiple build tool versions available, install the latest
+        C++ CMake tools for Windows
+        Windows 10 SDK
+
+[32m[✓][39m Android Studio (version 2025.1.4) [12ms]
+    [32m•[39m Android Studio at C:\Program Files\Android\Android Studio1
+    [32m•[39m Flutter plugin can be installed from:
+      🔨 https://plugins.jetbrains.com/plugin/9212-flutter
+    [32m•[39m Dart plugin can be installed from:
+      🔨 https://plugins.jetbrains.com/plugin/6351-dart
+    [32m•[39m Java version OpenJDK Runtime Environment (build 21.0.8+-14018985-b1038.68)
+
+[32m[✓][39m VS Code (version 1.105.1) [7ms]
+    [32m•[39m VS Code at C:\Users\mayab\AppData\Local\Programs\Microsoft VS Code
+    [32m•[39m Flutter extension version 3.122.0
+
+[32m[✓][39m Connected device (3 available) [304ms]
+    [32m•[39m Windows (desktop) • windows • windows-x64    • Microsoft Windows [Version 10.0.22631.6060]
+    [32m•[39m Chrome (web)      • chrome  • web-javascript • Google Chrome 141.0.7390.123
+    [32m•[39m Edge (web)        • edge    • web-javascript • Microsoft Edge 142.0.3595.53
+
+[32m[✓][39m Network resources [839ms]
+    [32m•[39m All expected network resources are available.
+
+[33m![39m Doctor found issues in 1 category.
+```
