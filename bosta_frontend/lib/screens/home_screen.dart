@@ -271,7 +271,7 @@ class _RiderHomeScreenState extends State<RiderHomeScreen> with TickerProviderSt
         panelBuilder: (sc) => BusBottomSheet(
           scrollController: sc,
           currentView: _currentView,
-          suggestedBuses: const [], // This needs to be adapted for TripSuggestion
+          tripSuggestions: _tripSuggestions,
           nearbyBuses: _nearbyBuses,
           onBusSelected: _onBusSelected,
           selectedBus: _selectedBus,

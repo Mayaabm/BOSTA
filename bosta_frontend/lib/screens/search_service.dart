@@ -1,10 +1,8 @@
 import 'dart:async';
 import 'dart:convert';
 
-import 'package:bosta_frontend/models/app_route.dart';
+import 'package:bosta_frontend/services/api_endpoints.dart';
 import 'package:bosta_frontend/screens/destination_result.dart';
-import 'package:bosta_frontend/services/trip_service.dart';
-import 'package:bosta_frontend/screens/api_endpoints.dart';
 import 'package:flutter/foundation.dart';
 import 'package:http/http.dart' as http;
 import 'package:latlong2/latlong.dart' as fm;
@@ -19,75 +17,65 @@ class SearchService {
       return [];
     }
 
-    // Fire off both API calls at the same time.
-    final mapboxFuture = _searchMapbox(query, proximity: proximity);
-    final stopsFuture = _searchBusStops(query);
-
-    // Wait for both to complete.
-    final results = await Future.wait([mapboxFuture, stopsFuture]);
-
-    final mapboxResults = results[0];
-    final stopResults = results[1];
-
-    // Combine the lists, you can prioritize one over the other if needed.
-    return [...stopResults, ...mapboxResults];
-  }
-
-  /// Searches the Mapbox Geocoding API.
-  static Future<List<DestinationResult>> _searchMapbox(String query, {fm.LatLng? proximity}) async {
-    final accessToken = TripService.getMapboxAccessToken();
-    String url = 'https://api.mapbox.com/geocoding/v5/mapbox.places/${Uri.encodeComponent(query)}.json?access_token=$accessToken&autocomplete=true';
-
-    if (proximity != null) {
-      url += '&proximity=${proximity.longitude},${proximity.latitude}';
-    }
-
-    try {
-      final response = await http.get(Uri.parse(url));
-      if (response.statusCode == 200) {
-        final data = json.decode(response.body);
-        final features = data['features'] as List;
-
-        return features.map((feature) {
-          final properties = feature['properties'];
-          final geometry = feature['geometry'];
-          final coords = geometry['coordinates'] as List;
-
-          return DestinationResult(
-            name: feature['text'] ?? 'Unknown Name',
-            address: properties['address'] ?? feature['place_name'] ?? 'No address',
-            latitude: (coords[1] as num).toDouble(),
-            longitude: (coords[0] as num).toDouble(),
-            source: 'mapbox',
-          );
-        }).toList();
-      }
-    } catch (e) {
-      debugPrint('Mapbox Geocoding Service Exception: $e');
-    }
-    return [];
+    // Only search for bus stops now.
+    return await searchBusStops(query);
   }
 
   /// Searches the backend API for bus stops.
-  static Future<List<DestinationResult>> _searchBusStops(String query) async {
+  static Future<List<DestinationResult>> searchBusStops(String query) async {
     final uri = Uri.parse('${ApiEndpoints.searchStops}?search=${Uri.encodeComponent(query)}');
     try {
       final response = await http.get(uri);
       if (response.statusCode == 200) {
         final List<dynamic> data = json.decode(response.body);
         return data.map((json) {
-          final stop = RouteStop.fromJson(json);
+          // Assuming the backend now returns a dictionary with stop and route info
+          final location = json['location']?['coordinates'] as List?;
+          if (location == null || location.length < 2) return null;
+
           return DestinationResult(
-            name: 'Stop ${stop.order ?? stop.id}',
-            address: 'Bus Stop',
-            latitude: stop.location.latitude,
-            longitude: stop.location.longitude,
+            name: json['name'] ?? 'Unknown Stop',
+            address: json['route_name'] ?? 'Unknown Route',
+            stopId: json['id']?.toString(),
+            routeId: json['route_id']?.toString(),
+            routeName: json['route_name']?.toString(),
+            latitude: (location[1] as num).toDouble(),
+            longitude: (location[0] as num).toDouble(),
             source: 'bus_stop',
           );
-        }).toList();
+        }).whereType<DestinationResult>().toList(); // Filter out any nulls from parsing errors
       }
     } catch (e) {
       debugPrint('Bus Stop Search Service Exception: $e');
+    }
+    return [];
+  }
+
+  /// Fetches all bus stops from the backend API.
+  static Future<List<DestinationResult>> getAllBusStops() async {
+    final uri = Uri.parse(ApiEndpoints.searchStops); // No query parameter
+    try {
+      final response = await http.get(uri);
+      if (response.statusCode == 200) {
+        final List<dynamic> data = json.decode(response.body);
+        return data.map((json) {
+          final location = json['location']?['coordinates'] as List?;
+          if (location == null || location.length < 2) return null;
+
+          return DestinationResult(
+            name: json['name'] ?? 'Unknown Stop',
+            address: json['route_name'] ?? 'Unknown Route',
+            stopId: json['id']?.toString(),
+            routeId: json['route_id']?.toString(),
+            routeName: json['route_name']?.toString(),
+            latitude: (location[1] as num).toDouble(),
+            longitude: (location[0] as num).toDouble(),
+            source: 'bus_stop',
+          );
+        }).whereType<DestinationResult>().toList();
+      }
+    } catch (e) {
+      debugPrint('Bus Stop All Stops Service Exception: $e');
     }
     return [];
   }

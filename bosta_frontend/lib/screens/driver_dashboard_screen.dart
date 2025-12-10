@@ -73,8 +73,12 @@ class _DriverDashboardScreenState extends State<DriverDashboardScreen> {
     debugPrint("\n--- [DriverDashboard] _initializeTrip called for tripId: ${widget.tripId} ---");
     debugPrint("\n\n[DriverDashboard] >>>>>>>>>> INITIALIZING TRIP <<<<<<<<<<");
     if (!mounted) return;
-
-    final authState = Provider.of<AuthService>(context, listen: false).currentState;
+    final authService = Provider.of<AuthService>(context, listen: false);
+    // --- FIX: Always fetch the latest profile before using it ---
+    // This ensures that if the route was just changed on the home screen,
+    // we have the most up-to-date information before initializing the trip.
+    await authService.fetchAndSetDriverProfile();
+    final authState = authService.currentState;
 
     debugPrint("[DriverDashboard] AuthState received in _initializeTrip:");
     debugPrint("  > isAuthenticated: ${authState.isAuthenticated}");
@@ -87,9 +91,6 @@ class _DriverDashboardScreenState extends State<DriverDashboardScreen> {
     debugPrint("  > initialBusPosition: ${authState.initialBusPosition}");
     debugPrint("  > tripId from widget: ${widget.tripId}");
 
-    // --- FIX: Loosen the validation. The most critical pieces of information are the
-    // bus ID (to know who is moving) and the assigned route (to know where they are going).
-    // The `onboardingComplete` flag is for UI flow, not a hard requirement for a trip.
     if (authState.assignedRoute == null || authState.driverInfo?.busId == null || authState.token == null) {
       debugPrint("[DriverDashboard] ERROR: Missing assignedRoute, busId, or token!");
       debugPrint("[DriverDashboard] assignedRoute: ${authState.assignedRoute}");
@@ -103,10 +104,6 @@ class _DriverDashboardScreenState extends State<DriverDashboardScreen> {
       debugPrint("[DriverDashboard] X FAILED: Prerequisite data (route, driverInfo, token, etc.) is missing from AuthState. Aborting.");
       return;
     }
-
-    // The tripId is now passed directly from the router after the TripService confirms its creation.
-    debugPrint("[DriverDashboard] 1. DETERMINING TRIP ID...");
-    debugPrint("  > TripId from router path parameter: ${widget.tripId}");
 
     final String? tripId = widget.tripId;
 
@@ -131,7 +128,6 @@ class _DriverDashboardScreenState extends State<DriverDashboardScreen> {
           _destinationStop = _assignedRoute!.stops.firstWhere((stop) => stop.id == authState.selectedEndStopId);
           _destinationName = 'Stop ${_destinationStop!.order}';
         } catch (e) {
-          // Fallback if the selected end stop ID is not found in the route's stops
           _destinationStop = _assignedRoute!.stops.last;
           _destinationName = 'Final Destination';
           debugPrint("[DriverDashboard] WARNING: selectedEndStopId not found in route stops. Using last stop as destination.");
@@ -143,7 +139,6 @@ class _DriverDashboardScreenState extends State<DriverDashboardScreen> {
       }
       _activeTripId = tripId;
 
-      // Calculate the specific route segment for this trip
       _calculateTripGeometry();
       debugPrint("[DriverDashboard] 2. STATE INITIALIZED: Set local state with tripId, route, and destination info.");
       debugPrint("[DriverDashboard] _assignedRoute: $_assignedRoute");
@@ -154,7 +149,6 @@ class _DriverDashboardScreenState extends State<DriverDashboardScreen> {
       debugPrint("[DriverDashboard] _activeTripId: $_activeTripId");
     });
 
-    // Check for location permissions before proceeding.
     debugPrint("--- [DriverDashboard] Initialization End (Success) ---\n");
     await _checkLocationPermission();
   }
@@ -471,6 +465,9 @@ class _DriverDashboardScreenState extends State<DriverDashboardScreen> {
         });
         _positionStream?.cancel();
         _updateTimer?.cancel();
+
+        // --- FIX: Refresh AuthService profile after ending trip ---
+        await Provider.of<AuthService>(context, listen: false).fetchAndSetDriverProfile();
 
         ScaffoldMessenger.of(context).showSnackBar(
           const SnackBar(content: Text("Trip ended successfully.")),

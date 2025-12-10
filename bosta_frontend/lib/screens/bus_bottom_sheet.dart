@@ -1,6 +1,7 @@
 import 'package:flutter/material.dart';
 import 'package:google_fonts/google_fonts.dart';
 import '../models/bus.dart';
+import '../models/trip_suggestion.dart';
 import 'rider_home_screen.dart';
 
 class BusBottomSheet extends StatelessWidget {
@@ -10,7 +11,7 @@ class BusBottomSheet extends StatelessWidget {
     final bool isFetchingEta;
   final ScrollController scrollController;
   final RiderView currentView;
-  final List<Bus> suggestedBuses;
+  final List<TripSuggestion> tripSuggestions;
   final List<Bus> nearbyBuses;
   final Function(Bus) onBusSelected;
 
@@ -18,7 +19,7 @@ class BusBottomSheet extends StatelessWidget {
     super.key,
     required this.scrollController,
     required this.currentView,
-    required this.suggestedBuses,
+    required this.tripSuggestions,
     required this.nearbyBuses,
     required this.onBusSelected,
     this.selectedBus,
@@ -29,8 +30,7 @@ class BusBottomSheet extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    final busesToShow = currentView == RiderView.nearbyBuses ? nearbyBuses : suggestedBuses;
-    final title = currentView == RiderView.nearbyBuses ? "Nearby Buses" : "Suggested Trips";
+    final title = currentView == RiderView.nearbyBuses ? "Nearby Buses" : "Trip Suggestions";
 
     return Container(
       decoration: const BoxDecoration(
@@ -66,23 +66,34 @@ class BusBottomSheet extends StatelessWidget {
             ),
           ),
           Expanded(
-            child: busesToShow.isEmpty
-                ? _buildEmptyState()
-                : ListView.builder(
-                    controller: scrollController,
-                    itemCount: busesToShow.length,
-                    itemBuilder: (context, index) {
-                      final bus = busesToShow[index];
-                      return _buildBusListItem(context, bus);
-                    },
-                  ),
+            child: _buildContent(),
           ),
         ],
       ),
     );
   }
 
-  Widget _buildEmptyState() {
+  Widget _buildContent() {
+    if (currentView == RiderView.planTrip) {
+      return tripSuggestions.isEmpty
+          ? _buildEmptyState("No trip suggestions found.", "Try a different destination.")
+          : ListView.builder(
+              controller: scrollController,
+              itemCount: tripSuggestions.length,
+              itemBuilder: (context, index) => _buildTripSuggestionItem(context, tripSuggestions[index], index + 1),
+            );
+    } else {
+      return nearbyBuses.isEmpty
+          ? _buildEmptyState("No nearby buses found.", "Try again in a moment.")
+          : ListView.builder(
+              controller: scrollController,
+              itemCount: nearbyBuses.length,
+              itemBuilder: (context, index) => _buildBusListItem(context, nearbyBuses[index]),
+            );
+    }
+  }
+
+  Widget _buildEmptyState(String title, String subtitle) {
     return Center(
       child: Column(
         mainAxisAlignment: MainAxisAlignment.center,
@@ -90,15 +101,81 @@ class BusBottomSheet extends StatelessWidget {
           const Icon(Icons.directions_bus, color: Colors.white24, size: 48),
           const SizedBox(height: 16),
           Text(
-            "No nearby buses found.",
+            title,
             style: GoogleFonts.urbanist(color: Colors.white54, fontSize: 16),
           ),
           Text(
-            "Try again in a moment.",
+            subtitle,
             style: GoogleFonts.urbanist(color: Colors.white38, fontSize: 14),
           ),
         ],
       ),
+    );
+  }
+
+  Widget _buildTripSuggestionItem(BuildContext context, TripSuggestion suggestion, int suggestionNumber) {
+    return Card(
+      color: const Color(0xFF2A2F33),
+      margin: const EdgeInsets.symmetric(horizontal: 16, vertical: 8),
+      child: Padding(
+        padding: const EdgeInsets.all(16.0),
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            Text(
+              "Suggestion $suggestionNumber",
+              style: GoogleFonts.urbanist(fontSize: 18, fontWeight: FontWeight.bold, color: const Color(0xFF2ED8C3)),
+            ),
+            const SizedBox(height: 12),
+            ...suggestion.legs.map((leg) => _buildTripLegItem(leg)).toList(),
+          ],
+        ),
+      ),
+    );
+  }
+
+  Widget _buildTripLegItem(TripLeg leg) {
+    return Padding(
+      padding: const EdgeInsets.symmetric(vertical: 8.0),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Row(
+            children: [
+              Icon(Icons.route, color: Colors.white70, size: 20),
+              const SizedBox(width: 8),
+              Expanded(
+                child: Text(
+                  leg.routeName,
+                  style: GoogleFonts.urbanist(fontSize: 16, fontWeight: FontWeight.w600, color: Colors.white),
+                ),
+              ),
+              if (leg.etaMinutes != null)
+                Text(
+                  '~${leg.etaMinutes} min',
+                  style: GoogleFonts.urbanist(color: const Color(0xFF2ED8C3), fontWeight: FontWeight.bold),
+                ),
+            ],
+          ),
+          const SizedBox(height: 8),
+          _buildLegDetail(Icons.login, "Board at:", leg.boardAt),
+          const SizedBox(height: 4),
+          _buildLegDetail(Icons.logout, "Exit at:", leg.exitAt),
+        ],
+      ),
+    );
+  }
+
+  Widget _buildLegDetail(IconData icon, String label, String value) {
+    return Row(
+      children: [
+        const SizedBox(width: 28), // Indent
+        Icon(icon, color: Colors.white54, size: 16),
+        const SizedBox(width: 8),
+        Text(label, style: GoogleFonts.urbanist(color: Colors.white54)),
+        const SizedBox(width: 8),
+        Expanded(child: Text(value, style: GoogleFonts.urbanist(color: Colors.white), overflow: TextOverflow.ellipsis)),
+      ],
     );
   }
 

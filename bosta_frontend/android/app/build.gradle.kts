@@ -1,38 +1,38 @@
 plugins {
-    id("com.android.application")
-    id("org.jetbrains.kotlin.android")
+    // These plugins are required to build the Android app.
+    
+    id("com.android.application") 
+    id("org.jetbrains.kotlin.android") 
     id("dev.flutter.flutter-gradle-plugin")
 }
 
 android {
     namespace = "com.example.bosta_frontend"
-    compileSdk = flutter.compileSdkVersion
-    ndkVersion = "25.2.9519653"
+    compileSdk = 34
 
     compileOptions {
-        sourceCompatibility = JavaVersion.VERSION_11
-        targetCompatibility = JavaVersion.VERSION_11
+        sourceCompatibility = JavaVersion.VERSION_17
+        targetCompatibility = JavaVersion.VERSION_17
     }
 
     kotlinOptions {
-        jvmTarget = JavaVersion.VERSION_11.toString()
+        jvmTarget = "17"
     }
 
     defaultConfig {
         applicationId = "com.example.bosta_frontend"
         minSdk = flutter.minSdkVersion
-        targetSdk = flutter.targetSdkVersion
-        versionCode = flutter.versionCode
-        versionName = flutter.versionName
-    }
-
-    buildTypes {
-        release {
-            signingConfig = signingConfigs.getByName("debug")
-        }
+        targetSdk = 34
+        versionCode = 1
+        versionName = "1.0"
     }
 }
 
+
 flutter {
     source = "../.."
+}
+
+dependencies {
+    // You can add native Android dependencies here.
 }

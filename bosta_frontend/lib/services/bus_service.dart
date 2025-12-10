@@ -5,7 +5,7 @@ import '../models/user_location.dart';
 import '../models/trip_suggestion.dart';
 import 'auth_service.dart'; // Import AuthService
 // Import Provider
-import 'api_endpoints.dart';
+import '../services/api_endpoints.dart';
 import 'package:flutter/foundation.dart';
 
 class BusService {
@@ -118,5 +118,27 @@ class BusService {
       debugPrint('BusService.findTripSuggestions Exception: $e');
     }
     return [];
+  }
+
+  /// Finds all active buses for a specific route ID.
+  static Future<List<Bus>> findBusesForRoute(String routeId) async {
+    // Use the correct endpoint and append the routeId.
+    final uri = Uri.parse('${ApiEndpoints.busesForRoute}$routeId/');
+    debugPrint('[BusService.findBusesForRoute] Fetching buses for route: $uri');
+
+    try {
+      final response = await http.get(uri);
+      if (response.statusCode == 200) {
+        final List<dynamic> data = json.decode(response.body);
+        final buses = data.map((json) => Bus.fromJson(json)).toList();
+        debugPrint('[BusService.findBusesForRoute] Found ${buses.length} buses for route $routeId.');
+        return buses;
+      } else {
+        debugPrint('[BusService.findBusesForRoute] Failed with status ${response.statusCode}: ${response.body}');
+      }
+    } catch (e) {
+      debugPrint('[BusService.findBusesForRoute] Exception: $e');
+    }
+    return []; // Return empty list on failure
   }
 }

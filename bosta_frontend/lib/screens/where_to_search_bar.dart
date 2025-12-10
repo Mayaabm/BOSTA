@@ -37,25 +37,25 @@ class _WhereToSearchBarState extends State<WhereToSearchBar> {
       controller: _controller,
       debounceDuration: const Duration(milliseconds: 500), // Handled by the package
       suggestionsCallback: (pattern) async {
-        // The package handles debouncing, so we can call the service directly.
-        if (pattern.trim().isEmpty) {
-          return [];
+        // Fetch all stops to act like a dropdown, then filter locally.
+        final allStops = await SearchService.getAllBusStops();
+        if (pattern.isEmpty) {
+          return allStops; // Show all stops if search is empty
         }
-        return await SearchService.searchDestinations(
-          pattern,
-          proximity: widget.userLocation,
-        );
+        // Filter the list based on the user's input
+        return allStops.where((stop) =>
+            stop.name.toLowerCase().contains(pattern.toLowerCase())).toList();
       },
       itemBuilder: (context, suggestion) {
         return ListTile(
           leading: Icon(
-            suggestion.source == 'bus_stop' ? Icons.directions_bus : Icons.location_on_outlined,
-            color: suggestion.source == 'bus_stop' ? Colors.orangeAccent : Theme.of(context).iconTheme.color,
+            Icons.directions_bus,
+            color: Colors.orangeAccent,
           ),
           title: Text(suggestion.name),
           subtitle: Text(
-            suggestion.address ?? '',
-            maxLines: 1,
+            suggestion.routeName ?? 'Unknown Route', // Show the route name
+            maxLines: 2,
             overflow: TextOverflow.ellipsis,
           ),
         );
@@ -81,7 +81,7 @@ class _WhereToSearchBarState extends State<WhereToSearchBar> {
           style: const TextStyle(color: Colors.white),
           decoration: InputDecoration(
             prefixIcon: const Icon(Icons.search, color: Color(0xFF2ED8C3)),
-            hintText: 'Where to?',
+            hintText: 'Search for a bus stop...',
             hintStyle: TextStyle(color: Colors.grey[400]),
             filled: true,
             fillColor: const Color(0xFF1F2327),
@@ -94,7 +94,10 @@ class _WhereToSearchBarState extends State<WhereToSearchBar> {
         );
       },
       emptyBuilder: (context) => const ListTile(
-        title: Text("No results found."),
+        title: Text(
+          "No bus stops found.",
+          style: TextStyle(color: Colors.white54),
+        ),
       ),
     );
   }

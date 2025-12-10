@@ -117,41 +117,52 @@ class TripService {
     required double riderLon,
     required String token,
   }) async {
-    debugPrint("\n=== FETCH ETA DEBUG ===");
-    debugPrint("[TripService.fetchEta] Bus ID: $busId");
-    debugPrint("[TripService.fetchEta] Rider position: LAT=$riderLat, LON=$riderLon");
-
-    final uri = Uri.parse(
-      '${ApiEndpoints.eta}?bus_id=$busId&target_lat=$riderLat&target_lon=$riderLon',
-    );
-    
-    debugPrint("[TripService.fetchEta] URI: $uri");
-
     try {
-      final response = await http.get(
-        uri,
-        headers: {
-          'Authorization': 'Bearer $token',
-          'Content-Type': 'application/json',
-        },
+      // Step 1: Fetch the bus's current location from our backend.
+      final busDetailsUri = Uri.parse(ApiEndpoints.busDetails(busId));
+      final busResponse = await http.get(
+        busDetailsUri,
+        headers: {'Authorization': 'Bearer $token'},
       );
-
-      debugPrint("[TripService.fetchEta] Response status: ${response.statusCode}");
-      debugPrint("[TripService.fetchEta] Response body: ${response.body}");
-
-      if (response.statusCode == 200) {
-        final data = json.decode(response.body) as Map<String, dynamic>;
-        debugPrint("[TripService.fetchEta] Parsed ETA data: $data");
-        debugPrint("=== FETCH ETA DEBUG (SUCCESS) ===\n");
-        return data;
-      } else {
-        debugPrint("[TripService.fetchEta] Failed with status ${response.statusCode}");
-        debugPrint("=== FETCH ETA DEBUG (FAILED) ===\n");
-        return null;
+  
+      if (busResponse.statusCode != 200) {
+        throw Exception('Failed to fetch bus location: ${busResponse.body}');
       }
+  
+      final busData = json.decode(busResponse.body);
+      final busLat = busData['latitude'];
+      final busLon = busData['longitude'];
+  
+      if (busLat == null || busLon == null) {
+        throw Exception('Bus location not available from backend.');
+      }
+  
+      // Step 2: Use bus location to call Mapbox for ETA to the rider.
+      final originCoords = "$busLon,$busLat";
+      final destCoords = "$riderLon,$riderLat";
+      final mapboxUrl =
+          'https://api.mapbox.com/directions/v5/mapbox/driving-traffic/$originCoords;$destCoords?access_token=${getMapboxAccessToken()}&overview=full&geometries=geojson';
+  
+      final mapboxResponse = await http.get(Uri.parse(mapboxUrl));
+  
+      if (mapboxResponse.statusCode == 200) {
+        final mapboxData = json.decode(mapboxResponse.body);
+        if (mapboxData['routes'] != null && mapboxData['routes'].isNotEmpty) {
+          final route = mapboxData['routes'][0];
+          final double durationSeconds = route['duration']?.toDouble() ?? 0.0;
+          final double distanceMeters = route['distance']?.toDouble() ?? 0.0;
+  
+          // Return the data in the format expected by BusDetailsModal
+          return {
+            'estimated_arrival_minutes': durationSeconds / 60,
+            'distance_m': distanceMeters,
+          };
+        }
+      }
+      // If any step fails, return null.
+      return null;
     } catch (e) {
       debugPrint("[TripService.fetchEta] Exception: $e");
-      debugPrint("=== FETCH ETA DEBUG (EXCEPTION) ===\n");
       return null;
     }
   }

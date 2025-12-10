@@ -20,6 +20,7 @@ class ApiEndpoints {
   // Rider & Buses
   static const String nearbyBuses = '$baseUrl/buses/nearby/';
   static const String busDetails = '$baseUrl/buses'; // e.g., /api/buses/1/
+  static String busesOnRoute(String routeId) => '$baseUrl/buses/route/$routeId/';
   static const String planTrip = '$baseUrl/trips/plan/';
 
   // Search

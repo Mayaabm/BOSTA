@@ -309,7 +309,6 @@ class _BusDetailsModalState extends State<BusDetailsModal> {
               children: [
                 _buildStatColumn('ETA to You', _etaFromDriver ?? bus.eta?.toMinutesString() ?? '...'),
                 _buildStatColumn('Distance', _distanceFromDriver != null ? '${(_distanceFromDriver! / 1000).toStringAsFixed(1)} km' : (bus.distanceMeters != null ? '${(bus.distanceMeters! / 1000).toStringAsFixed(1)} km' : '...')),
-                _buildStatColumn('Speed', '${bus.speed.toStringAsFixed(0)} km/h'),
               ],
             ),
           const Spacer(),

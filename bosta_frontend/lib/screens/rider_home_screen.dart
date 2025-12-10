@@ -20,6 +20,7 @@ import '../models/trip_suggestion.dart';
 import '../services/trip_service.dart';
 import '../services/bus_service.dart'; // Using the actual service
 import '../services/auth_service.dart'; // For getting auth token
+import 'destination_result.dart';
 // Using the actual service
 import 'bus_bottom_sheet.dart';
 import 'bus_details_modal.dart';
@@ -48,7 +49,7 @@ class _RiderHomeScreenState extends State<RiderHomeScreen> with TickerProviderSt
   // State for Route 224
   // static const String _targetRouteId = '224'; // No longer needed for nearby buses
   AppRoute? _selectedBusRoute; // To store the route of the *selected* bus
-  List<Bus> _busesOnRoute = [];
+  List<Bus> _displayedBuses = [];
   // bool _isNearRoute = false; // No longer needed, we fetch based on location
 
   RiderView _currentView = RiderView.planTrip;
@@ -57,6 +58,9 @@ class _RiderHomeScreenState extends State<RiderHomeScreen> with TickerProviderSt
   Timer? _selectedBusDetailsTimer;
   bool _isAutoCentering = false;
   bool _useMockLocation = false; // Dev toggle
+
+  // State for route-filtered buses
+  String? _selectedRouteId;
 
   // Animation for bus markers
   late final AnimationController _pulseController; // For bus marker pulse animation
@@ -236,7 +240,7 @@ class _RiderHomeScreenState extends State<RiderHomeScreen> with TickerProviderSt
     if (_currentPosition == null) return;
     try {
       final buses = await BusService.getNearbyBuses(latitude: _currentPosition!.latitude, longitude: _currentPosition!.longitude);
-      if (mounted) setState(() => _busesOnRoute = buses);
+      if (mounted) setState(() => _displayedBuses = buses);
     } catch (e) {
       debugPrint("Error fetching nearby buses: $e");
     }
@@ -298,6 +302,7 @@ class _RiderHomeScreenState extends State<RiderHomeScreen> with TickerProviderSt
       _selectedBusRoute = null; // Clear the route when deselecting
       _isAutoCentering = false;
       _etaBusToRider = null;
+      _selectedRouteId = null; // Clear selected route
       _isFetchingEta = false;
     });
   }
@@ -415,6 +420,31 @@ class _RiderHomeScreenState extends State<RiderHomeScreen> with TickerProviderSt
     );
     setState(() => _tripSuggestions = suggestions);
   }
+
+  /// Handles the selection of a destination stop from the search bar.
+  Future<void> _onDestinationSelected(DestinationResult result) async {
+    debugPrint("Destination selected: ${result.name} at (${result.latitude}, ${result.longitude})");
+
+    // Switch the view to "Plan Trip" to show the suggestions.
+    _onViewChanged(RiderView.planTrip);
+
+    // Call the service to find trip suggestions to the selected destination.
+    await _findBusesTo(LatLng(result.latitude, result.longitude));
+
+    // If suggestions were found, show them.
+    if (_tripSuggestions.isNotEmpty) {
+      _panelController.open();
+    }
+    // Open the panel to show the results.
+    _panelController.open();
+  }
+
+  /// Fetches and displays only the buses for a specific route.
+  Future<void> _filterBusesByRoute(String routeId) async {
+    final buses = await BusService.findBusesForRoute(routeId);
+    setState(() => _displayedBuses = buses);
+  }
+
   // --- UI Build Method ---
   @override
   Widget build(BuildContext context) {
@@ -436,8 +466,8 @@ class _RiderHomeScreenState extends State<RiderHomeScreen> with TickerProviderSt
         panelBuilder: (sc) => BusBottomSheet(
           scrollController: sc,
           currentView: _currentView,
-          suggestedBuses: const [], // This needs to be adapted for TripSuggestion
-          nearbyBuses: _busesOnRoute, // Show buses from Route 224 in the panel
+          tripSuggestions: _tripSuggestions, // Pass the trip suggestions
+          nearbyBuses: _displayedBuses, // Show displayed buses in the panel
           onBusSelected: (bus) {
             // When a bus is tapped in the list, treat it like a map marker tap.
             _onBusMarkerTapped(bus);
@@ -482,7 +512,7 @@ class _RiderHomeScreenState extends State<RiderHomeScreen> with TickerProviderSt
                   )
                 else
                   MarkerLayer(markers: [
-                      if (_currentView == RiderView.nearbyBuses && _selectedBus == null) ..._buildAllBusMarkers(),
+                      if (_selectedBus == null) ..._buildAllBusMarkers(),
                       if (_currentPosition != null) _buildUserLocationMarker(),
                       if (_selectedBus != null) _buildSelectedBusMarker(),
                     ]),
@@ -542,9 +572,14 @@ class _RiderHomeScreenState extends State<RiderHomeScreen> with TickerProviderSt
 
   void _onViewChanged(RiderView newView) {
     setState(() {
+      _selectedBus = null; // Deselect bus when switching views
+      _selectedRouteId = null; // Clear route filter
       _currentView = newView;
       if (newView == RiderView.nearbyBuses) {
         _loadNearbyBuses(); // Fetch buses and start polling
+      } else {
+        _displayedBuses = []; // Clear buses when switching to plan trip
+        _tripSuggestions = []; // Clear suggestions as well
       }
     });
   }
@@ -552,7 +587,7 @@ class _RiderHomeScreenState extends State<RiderHomeScreen> with TickerProviderSt
   // --- UI Helper Widgets ---
 
   List<Marker> _buildAllBusMarkers() {
-    return _busesOnRoute.map((bus) {
+    return _displayedBuses.map((bus) {
       return Marker(
         width: 30,
         height: 30,
@@ -680,12 +715,7 @@ class _RiderHomeScreenState extends State<RiderHomeScreen> with TickerProviderSt
               userLocation: _currentPosition != null
                   ? LatLng(_currentPosition!.latitude, _currentPosition!.longitude)
                   : null,
-              onDestinationSelected: (result) {
-                debugPrint("Destination selected: ${result.name} at ${result.latitude}, ${result.longitude}");
-                _findBusesTo(LatLng(result.latitude, result.longitude));
-                // The panel will automatically update with the new _tripSuggestions list.
-                _panelController.open(); // Open the panel to show the results.
-              },
+              onDestinationSelected: _onDestinationSelected,
             ),
             const SizedBox(height: 16), // Spacing between search bar and segmented control
             CupertinoSlidingSegmentedControl<RiderView>(

@@ -1,1 +1,0 @@
-C:\Users\mayab\.vscode\BOSTA\bosta_frontend\android\app\src\main\kotlin\com\example\bosta_frontend\MainActivity.kt

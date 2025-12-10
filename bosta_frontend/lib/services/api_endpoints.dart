@@ -35,6 +35,9 @@ class ApiEndpoints {
   static String get updateLocation => '$base/buses/update_location/';
   static String get eta => '$base/eta/';
 
+  // --- Search ---
+  static String get searchStops => '$base/stops/';
+
   // --- Development ---
   static String get devRiderLocation => '$base/dev/rider_location/';
 }

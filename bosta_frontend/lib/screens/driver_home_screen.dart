@@ -196,10 +196,36 @@ class _DriverHomeScreenState extends State<DriverHomeScreen> {
     );
 
     if (selectedRoute != null) {
-      // The backend needs a way to associate the driver with the new route.
-      // We'll use patchDriverProfile for this.
       setState(() => _isLoading = true);
-      await authService.patchDriverProfile({'route_id': selectedRoute.id});
+      debugPrint("[DriverHomeScreen] Attempting to update route to: ${selectedRoute.id}");
+      final patchError = await authService.patchDriverProfile({'route_id': selectedRoute.id});
+      if (patchError != null) {
+        debugPrint("[DriverHomeScreen] patchDriverProfile error: $patchError");
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(content: Text("Backend error: $patchError")),
+        );
+        setState(() => _isLoading = false);
+        return;
+      }
+      int pollCount = 0;
+      bool routeReady = false;
+      while (pollCount < 20 && mounted) { // Increase retries
+        await Future.delayed(const Duration(milliseconds: 500)); // Wait longer
+        await authService.fetchAndSetDriverProfile();
+        final raw = authService.rawDriverProfile;
+        final route = raw?['route'];
+        debugPrint('[DriverHomeScreen] Poll $pollCount: route=${route != null ? route['id'] : 'null'} (expected: ${selectedRoute.id})');
+        if (route != null && route['id'].toString() == selectedRoute.id.toString()) {
+          routeReady = true;
+          break;
+        }
+        pollCount++;
+      }
+      if (!routeReady) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(content: Text("Failed to update route to ${selectedRoute.id}. Please try again or check backend logs.")),
+        );
+      }
       if (mounted) setState(() => _isLoading = false);
     }
   }
