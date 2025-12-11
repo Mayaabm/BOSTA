@@ -10,6 +10,8 @@ RUN apt-get update && apt-get install -y \
 # Set GDAL environment vars
 ENV CPLUS_INCLUDE_PATH=/usr/include/gdal
 ENV C_INCLUDE_PATH=/usr/include/gdal
+ENV GDAL_LIBRARY_PATH=/usr/lib/libgdal.so
+ENV GEOS_LIBRARY_PATH=/usr/lib/libgeos_c.so
 
 # Create directory
 WORKDIR /app
