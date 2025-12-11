@@ -21,4 +21,3 @@ urlpatterns = [
     path('api/', include('api.urls')),
 ]
 
-print("--- Finished loading myproject/urls.py ---")
