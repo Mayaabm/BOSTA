@@ -28,9 +28,12 @@ BASE_DIR = Path(__file__).resolve().parent.parent
 SECRET_KEY = 'django-insecure-rp3wl+fhgh^0_urw%li&jw-qd=@s8grose)!rk2708&)q29$$q'
 
 # SECURITY WARNING: don't run with debug turned on in production!
-DEBUG = True
+DEBUG = False
 
-ALLOWED_HOSTS = ["192.168.1.102", "localhost", "127.0.0.1"]
+ALLOWED_HOSTS = [
+    "192.168.1.102", "localhost", "127.0.0.1",
+    "your-railway-app-domain"  # Replace with your actual Railway domain
+]
 
 
 # Application definition
@@ -148,12 +151,13 @@ USE_I18N = True
 USE_TZ = True
 
 
-# Static files (CSS, JavaScript, Images)
-# https://docs.djangoproject.com/en/5.2/howto/static-files/
+
 
 STATIC_URL = '/static/'
-STATIC_ROOT = BASE_DIR / "staticfiles"
+STATIC_ROOT = str(BASE_DIR / "staticfiles")
 STATICFILES_DIRS = []
+
+
 
 # Default primary key field type
 # https://docs.djangoproject.com/en/5.2/ref/settings/#default-auto-field
