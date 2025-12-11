@@ -14,7 +14,6 @@ class DriverOnboardingScreen extends StatefulWidget {
 }
 
 class _DriverOnboardingScreenState extends State<DriverOnboardingScreen> {
-  // Separate form keys for each section
   final _personalInfoFormKey = GlobalKey<FormState>();
   final _vehicleInfoFormKey = GlobalKey<FormState>();
   final _firstNameController = TextEditingController();
@@ -24,13 +23,9 @@ class _DriverOnboardingScreenState extends State<DriverOnboardingScreen> {
   final _busCapacityController = TextEditingController();
 
   bool _isLoading = false;
-  String? _generalErrorMessage; // For errors not tied to a specific section
-
-  // Loading states for individual sections
+  String? _generalErrorMessage;
   bool _isSavingPersonalInfo = false;
   bool _isSavingVehicleInfo = false;
-
-  // Track if we are in edit mode (from query params)
   bool _isEditMode = false;
   AppRoute? _assignedRoute;
 
@@ -39,32 +34,29 @@ class _DriverOnboardingScreenState extends State<DriverOnboardingScreen> {
     super.initState();
     _isEditMode = GoRouter.of(context).routeInformationProvider.value.uri.queryParameters.containsKey('edit');
     if (_isEditMode) {
-      // Load existing data after the first frame
       WidgetsBinding.instance.addPostFrameCallback((_) => _loadExistingProfileData());
     }
   }
 
-  // Generic method to save a section
   Future<String?> _saveSection(Map<String, dynamic> data, {bool isInitialOnboard = false}) async {
     FocusScope.of(context).unfocus();
     final authService = Provider.of<AuthService>(context, listen: false);
-
     String? error;
     if (isInitialOnboard) {
-      // This path is for the very first time a driver sets up their profile
       error = await authService.setupDriverProfile(
-        firstName: _firstNameController.text, lastName: _lastNameController.text,
-        phoneNumber: _phoneController.text, busPlateNumber: _busPlateController.text.toUpperCase(), 
-        busCapacity: int.parse(_busCapacityController.text), refreshToken: authService.currentState.refreshToken,
+        firstName: _firstNameController.text,
+        lastName: _lastNameController.text,
+        phoneNumber: _phoneController.text,
+        busPlateNumber: _busPlateController.text.toUpperCase(),
+        busCapacity: int.parse(_busCapacityController.text),
+        refreshToken: authService.currentState.refreshToken,
       );
     } else {
-      // This path is for editing existing profile sections
       error = await authService.patchDriverProfile(data);
     }
     return error;
   }
 
-  // Method to load existing profile data into controllers
   void _loadExistingProfileData() {
     final authService = Provider.of<AuthService>(context, listen: false);
     final authState = authService.currentState;
@@ -74,7 +66,7 @@ class _DriverOnboardingScreenState extends State<DriverOnboardingScreen> {
     if (driverInfo != null) {
       _firstNameController.text = driverInfo.firstName;
       _lastNameController.text = driverInfo.lastName;
-      _phoneController.text = driverInfo.phoneNumber ?? ''; // Assuming phoneNumber is added to DriverInfo
+      _phoneController.text = driverInfo.phoneNumber ?? '';
       _busPlateController.text = driverInfo.busPlateNumber ?? '';
       _busCapacityController.text = driverInfo.busCapacity?.toString() ?? '';
     }
@@ -98,7 +90,6 @@ class _DriverOnboardingScreenState extends State<DriverOnboardingScreen> {
         ScaffoldMessenger.of(context).showSnackBar(
           const SnackBar(content: Text('Personal info saved!'), duration: Duration(seconds: 2)),
         );
-        // No navigation needed, just show confirmation.
       }
     }
   }
@@ -124,14 +115,13 @@ class _DriverOnboardingScreenState extends State<DriverOnboardingScreen> {
     }
   }
 
-  // This method is for the initial onboarding submission, which calls setupDriverProfile (POST)
   Future<void> _submitInitialOnboarding() async {
-    // Validate all forms
     final bool personalValid = _personalInfoFormKey.currentState?.validate() ?? false;
     final bool vehicleValid = _vehicleInfoFormKey.currentState?.validate() ?? false;
 
-    // Safely capture the required values after validation.
-    setState(() => _isLoading = true); // Global loading for initial setup
+    if (!personalValid || !vehicleValid) return;
+
+    setState(() => _isLoading = true);
     final error = await _saveSection({}, isInitialOnboard: true);
     if (mounted) {
       setState(() {
@@ -139,8 +129,10 @@ class _DriverOnboardingScreenState extends State<DriverOnboardingScreen> {
         _generalErrorMessage = error;
       });
       if (error == null) {
-        ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('Profile saved. You can now start your trip!')));
-        GoRouter.of(context).go('/driver/home'); // Navigate to home after initial setup
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(content: Text('Profile saved. You can now start your trip!')),
+        );
+        GoRouter.of(context).go('/driver/home');
       }
     }
   }
@@ -155,7 +147,6 @@ class _DriverOnboardingScreenState extends State<DriverOnboardingScreen> {
     super.dispose();
   }
 
-  // Helper to build a section with a title, content, and save button
   Widget _buildSection({
     required String title,
     required GlobalKey<FormState> formKey,
@@ -165,29 +156,29 @@ class _DriverOnboardingScreenState extends State<DriverOnboardingScreen> {
     bool initiallyExpanded = false,
   }) {
     return Card(
-      margin: const EdgeInsets.symmetric(vertical: 8.0),
+      margin: const EdgeInsets.symmetric(vertical: 12.0),
       color: const Color(0xFF1F2327),
-      shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
+      shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(16)),
       child: ExpansionTile(
         initiallyExpanded: initiallyExpanded,
         title: Text(
           title,
           style: GoogleFonts.urbanist(
-            fontSize: 20,
-            fontWeight: FontWeight.bold,
+            fontSize: 22,
+            fontWeight: FontWeight.w600,
             color: Colors.white,
           ),
         ),
         children: [
           Padding(
-            padding: const EdgeInsets.all(16.0),
+            padding: const EdgeInsets.all(20.0),
             child: Form(
               key: formKey,
               child: Column(
                 crossAxisAlignment: CrossAxisAlignment.stretch,
                 children: [
                   ...children,
-                  const SizedBox(height: 20),
+                  const SizedBox(height: 24),
                   if (isSaving)
                     const Center(child: CircularProgressIndicator(color: Color(0xFF2ED8C3)))
                   else
@@ -195,10 +186,10 @@ class _DriverOnboardingScreenState extends State<DriverOnboardingScreen> {
                       onPressed: onSave,
                       style: ElevatedButton.styleFrom(
                         backgroundColor: const Color(0xFF2ED8C3),
-                        padding: const EdgeInsets.symmetric(vertical: 16),
-                        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
+                        padding: const EdgeInsets.symmetric(vertical: 14),
+                        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(16)),
                       ),
-                      child: Text('Save $title', style: GoogleFonts.urbanist(fontSize: 18, fontWeight: FontWeight.bold, color: Colors.black)),
+                      child: Text('Save $title', style: GoogleFonts.urbanist(fontSize: 18, fontWeight: FontWeight.w600, color: Colors.black)),
                     ),
                 ],
               ),
@@ -225,14 +216,18 @@ class _DriverOnboardingScreenState extends State<DriverOnboardingScreen> {
           padding: const EdgeInsets.symmetric(horizontal: 24.0),
           child: Column(
             crossAxisAlignment: CrossAxisAlignment.stretch,
-            children: [              const SizedBox(height: 40),
-              Text(_isEditMode ? 'Edit Profile' : 'Driver Setup',
-                  textAlign: TextAlign.center,
-                  style: GoogleFonts.urbanist(
-                      fontSize: 32,
-                      fontWeight: FontWeight.bold,
-                      color: Colors.white)),
-              const SizedBox(height: 10),
+            children: [
+              const SizedBox(height: 40),
+              Text(
+                _isEditMode ? 'Edit Profile' : 'Driver Setup',
+                textAlign: TextAlign.center,
+                style: GoogleFonts.urbanist(
+                  fontSize: 32,
+                  fontWeight: FontWeight.bold,
+                  color: Colors.white,
+                ),
+              ),
+              const SizedBox(height: 12),
               Text(
                 _isEditMode
                     ? 'Update your personal and vehicle information.'
@@ -240,9 +235,7 @@ class _DriverOnboardingScreenState extends State<DriverOnboardingScreen> {
                 textAlign: TextAlign.center,
                 style: GoogleFonts.urbanist(fontSize: 16, color: Colors.grey[400]),
               ),
-              const SizedBox(height: 20),
-
-              // Personal Information Section
+              const SizedBox(height: 24),
               _buildSection(
                 title: 'Personal Information',
                 formKey: _personalInfoFormKey,
@@ -255,10 +248,8 @@ class _DriverOnboardingScreenState extends State<DriverOnboardingScreen> {
                 ],
                 onSave: _submitPersonalInfo,
                 isSaving: _isSavingPersonalInfo,
-                initiallyExpanded: true, // Expand first section by default
+                initiallyExpanded: true,
               ),
-
-              // Vehicle Information Section
               _buildSection(
                 title: 'Vehicle Information',
                 formKey: _vehicleInfoFormKey,
@@ -270,32 +261,31 @@ class _DriverOnboardingScreenState extends State<DriverOnboardingScreen> {
                 onSave: _submitVehicleInfo,
                 isSaving: _isSavingVehicleInfo,
               ),
-
-              const SizedBox(height: 20),
+              const SizedBox(height: 24),
               if (_generalErrorMessage != null)
-                  Padding(
-                    padding: const EdgeInsets.only(bottom: 16.0),
-                    child: Text(_generalErrorMessage!, style: const TextStyle(color: Colors.red, fontSize: 14), textAlign: TextAlign.center),
+                Padding(
+                  padding: const EdgeInsets.only(bottom: 16.0),
+                  child: Text(
+                    _generalErrorMessage!,
+                    style: const TextStyle(color: Colors.red, fontSize: 14),
+                    textAlign: TextAlign.center,
                   ),
-
-              // Only show "Complete Onboarding" button if not in edit mode
+                ),
               if (!_isEditMode && _isLoading)
                 const Center(child: CircularProgressIndicator(color: Color(0xFF2ED8C3)))
-              else if (!_isEditMode) // Only show this button for initial onboarding
-                  ElevatedButton(
-                    onPressed: _submitInitialOnboarding,
-                    style: ElevatedButton.styleFrom(
-                      backgroundColor: const Color(0xFF2ED8C3),
-                      padding: const EdgeInsets.symmetric(vertical: 16),
-                      shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
-                    ),
-                    child: Text('Complete Onboarding', style: GoogleFonts.urbanist(fontSize: 18, fontWeight: FontWeight.bold, color: Colors.black)),
+              else if (!_isEditMode)
+                ElevatedButton(
+                  onPressed: _submitInitialOnboarding,
+                  style: ElevatedButton.styleFrom(
+                    backgroundColor: const Color(0xFF2ED8C3),
+                    padding: const EdgeInsets.symmetric(vertical: 16),
+                    shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(16)),
                   ),
-              // Show "Done" button when in edit mode
+                  child: Text('Complete Onboarding', style: GoogleFonts.urbanist(fontSize: 18, fontWeight: FontWeight.w600, color: Colors.black)),
+                ),
               if (_isEditMode)
                 ElevatedButton(
                   onPressed: () async {
-                    // Save both sections before returning
                     setState(() => _isLoading = true);
                     final personalError = await _saveSection({
                       'first_name': _firstNameController.text,
@@ -322,25 +312,14 @@ class _DriverOnboardingScreenState extends State<DriverOnboardingScreen> {
                   style: ElevatedButton.styleFrom(
                     backgroundColor: const Color(0xFF1F2327),
                     padding: const EdgeInsets.symmetric(vertical: 16),
-                    shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
+                    shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(16)),
                   ),
-                  child: Text('Done', style: GoogleFonts.urbanist(fontSize: 18, fontWeight: FontWeight.bold, color: Colors.white)),
+                  child: Text('Done', style: GoogleFonts.urbanist(fontSize: 18, fontWeight: FontWeight.w600, color: Colors.white)),
                 ),
-                const SizedBox(height: 20),
-              ],
-            ),
+              const SizedBox(height: 24),
+            ],
           ),
         ),
-    );
-  }
-
-  Widget _buildErrorMessage() {
-    return Padding(
-      padding: const EdgeInsets.only(bottom: 16.0),
-      child: Text(
-        _generalErrorMessage!,
-        style: const TextStyle(color: Colors.red, fontSize: 14),
-        textAlign: TextAlign.center,
       ),
     );
   }
@@ -357,9 +336,9 @@ class _DriverOnboardingScreenState extends State<DriverOnboardingScreen> {
         prefixIcon: Icon(icon, color: Colors.grey[400]),
         filled: true,
         fillColor: const Color(0xFF1F2327),
-        border: OutlineInputBorder(borderRadius: BorderRadius.circular(12), borderSide: BorderSide.none),
+        border: OutlineInputBorder(borderRadius: BorderRadius.circular(16), borderSide: BorderSide.none),
         focusedBorder: OutlineInputBorder(
-          borderRadius: BorderRadius.circular(12),
+          borderRadius: BorderRadius.circular(16),
           borderSide: const BorderSide(color: Color(0xFF2ED8C3)),
         ),
       ),
@@ -378,4 +357,3 @@ class _DriverOnboardingScreenState extends State<DriverOnboardingScreen> {
     );
   }
 }
-   

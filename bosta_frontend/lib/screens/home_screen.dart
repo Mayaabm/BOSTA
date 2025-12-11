@@ -9,13 +9,12 @@ import 'package:sliding_up_panel/sliding_up_panel.dart';
 import 'package:http/http.dart' as http;
 import 'dart:convert';
 import '../services/trip_service.dart';
-
 import '../../../models/trip_suggestion.dart';
 import '../../../models/bus.dart';
 import '../../../services/bus_service.dart';
-import 'rider_home_screen.dart' show RiderView; // Import only the enum
-import 'bus_bottom_sheet.dart'; // Keep other imports
-import 'dual_search_bar.dart'; // Keep other imports
+import 'rider_home_screen.dart' show RiderView;
+import 'bus_bottom_sheet.dart';
+import 'dual_search_bar.dart';
 
 class RiderHomeScreen extends StatefulWidget {
   const RiderHomeScreen({super.key});
@@ -25,22 +24,18 @@ class RiderHomeScreen extends StatefulWidget {
 }
 
 class _RiderHomeScreenState extends State<RiderHomeScreen> with TickerProviderStateMixin {
-    // ETA state for selected bus
-    String? _etaBusToRider;
-    String? _etaBusToDestination;
-    bool _isFetchingEta = false;
+  String? _etaBusToRider;
+  String? _etaBusToDestination;
+  bool _isFetchingEta = false;
   final MapController _mapController = MapController();
   final PanelController _panelController = PanelController();
   Position? _currentPosition;
   StreamSubscription<Position>? _positionStream;
   Timer? _busUpdateTimer;
-
   RiderView _currentView = RiderView.planTrip;
   List<Bus> _nearbyBuses = [];
-  List<TripSuggestion> _tripSuggestions = []; // Updated to use the new model
+  List<TripSuggestion> _tripSuggestions = [];
   Bus? _selectedBus;
-
-  // Animation for bus markers
   late final AnimationController _pulseController;
 
   @override
@@ -50,7 +45,6 @@ class _RiderHomeScreenState extends State<RiderHomeScreen> with TickerProviderSt
       vsync: this,
       duration: const Duration(milliseconds: 1500),
     )..repeat();
-
     _initMapAndLocation();
   }
 
@@ -65,21 +59,18 @@ class _RiderHomeScreenState extends State<RiderHomeScreen> with TickerProviderSt
   Future<void> _initMapAndLocation() async {
     try {
       await Geolocator.requestPermission();
-
       final position = await Geolocator.getCurrentPosition();
       if (mounted) {
         setState(() {
           _currentPosition = position;
         });
-        // Animate map to the new user location
         _mapController.move(LatLng(position.latitude, position.longitude), 15.0);
         _startLocationListener();
-        _fetchNearbyBuses(); // Initial fetch
+        _fetchNearbyBuses();
         _startPeriodicBusUpdates();
       }
     } catch (e) {
       debugPrint("Error getting initial location: $e");
-      // Optionally show a snackbar if location fails
       ScaffoldMessenger.of(context).showSnackBar(
         const SnackBar(content: Text("Could not get location. Please enable GPS.")),
       );
@@ -99,7 +90,6 @@ class _RiderHomeScreenState extends State<RiderHomeScreen> with TickerProviderSt
       if (_currentView == RiderView.nearbyBuses) {
         _fetchNearbyBuses();
       }
-      // Note: Trip suggestions are fetched on-demand, not periodically.
     });
   }
 
@@ -114,22 +104,14 @@ class _RiderHomeScreenState extends State<RiderHomeScreen> with TickerProviderSt
         setState(() => _nearbyBuses = buses);
       }
     } catch (e) {
-      // Silently fail on periodic updates to not bother the user
       debugPrint("Error fetching nearby buses: $e");
     }
   }
 
   Future<void> _fetchTripSuggestions(String from, String to) async {
-    // This simulates fetching suggestions.
-    // In a real app, you'd geocode 'from' and 'to' into coordinates
-    // and call a service like `BusService.getSuggestions(from, to)`.
     if (_currentPosition == null) return;
-
-    // This is a placeholder for geocoding the 'to' address.
-    // For now, we'll use a hardcoded destination.
-    const double destinationLat = 34.1216; // Example: Jbeil
-    const double destinationLon = 35.6489; 
-
+    const double destinationLat = 34.1216;
+    const double destinationLon = 35.6489;
     try {
       final suggestions = await BusService.findTripSuggestions(
         startLat: _currentPosition!.latitude,
@@ -164,13 +146,9 @@ class _RiderHomeScreenState extends State<RiderHomeScreen> with TickerProviderSt
     setState(() => _selectedBus = bus);
     _mapController.move(LatLng(bus.latitude, bus.longitude), 16.0);
     _panelController.open();
-    // Here you would navigate to the trip screen
-    // context.go('/rider/trip/${bus.id}');
     ScaffoldMessenger.of(context).showSnackBar(
       SnackBar(content: Text("Starting trip with Bus ${bus.plateNumber}... (UI Placeholder)")),
     );
-
-    // Fetch ETAs for this bus
     _fetchEtasForSelectedBus(bus);
   }
 
@@ -181,9 +159,7 @@ class _RiderHomeScreenState extends State<RiderHomeScreen> with TickerProviderSt
       _etaBusToRider = null;
       _etaBusToDestination = null;
     });
-    debugPrint("[Rider] Fetching ETAs for bus ${bus.id}...");
     try {
-      // 1. ETA from bus to rider location
       final busLat = bus.latitude;
       final busLon = bus.longitude;
       final riderLat = _currentPosition!.latitude;
@@ -192,27 +168,19 @@ class _RiderHomeScreenState extends State<RiderHomeScreen> with TickerProviderSt
       final destCoords = "$riderLon,$riderLat";
       final url1 =
           'https://api.mapbox.com/directions/v5/mapbox/driving-traffic/$originCoords;$destCoords?access_token=${TripService.getMapboxAccessToken()}&overview=full&geometries=geojson';
-      debugPrint("[Rider] Mapbox ETA bus→rider: $url1");
       final resp1 = await http.get(Uri.parse(url1));
       if (resp1.statusCode == 200) {
         final data = json.decode(resp1.body);
         if (data['routes'] != null && data['routes'].isNotEmpty) {
           final route = data['routes'][0];
           final double durationSeconds = route['duration']?.toDouble() ?? 0.0;
-          final double distanceMeters = route['distance']?.toDouble() ?? 0.0;
-          debugPrint("[Rider] ETA bus→rider: ${(durationSeconds/60).toStringAsFixed(1)} min, ${(distanceMeters/1000).toStringAsFixed(2)} km");
-          _etaBusToRider = "${(durationSeconds/60).ceil()} min";
+          _etaBusToRider = "${(durationSeconds / 60).ceil()} min";
         } else {
-          debugPrint("[Rider] No route found for bus→rider");
           _etaBusToRider = "--";
         }
       } else {
-        debugPrint("[Rider] Mapbox error for bus→rider: ${resp1.statusCode}");
         _etaBusToRider = "--";
       }
-
-      // 2. ETA from bus to rider's destination (if available)
-      // For now, use the last trip suggestion's destination if available
       if (_tripSuggestions.isNotEmpty) {
         final lastLeg = _tripSuggestions.last.legs.last;
         final destLat = lastLeg.destLat;
@@ -221,53 +189,42 @@ class _RiderHomeScreenState extends State<RiderHomeScreen> with TickerProviderSt
           final destCoords2 = "$destLon,$destLat";
           final url2 =
               'https://api.mapbox.com/directions/v5/mapbox/driving-traffic/$originCoords;$destCoords2?access_token=${TripService.getMapboxAccessToken()}&overview=full&geometries=geojson';
-          debugPrint("[Rider] Mapbox ETA bus→destination: $url2");
           final resp2 = await http.get(Uri.parse(url2));
           if (resp2.statusCode == 200) {
             final data = json.decode(resp2.body);
             if (data['routes'] != null && data['routes'].isNotEmpty) {
               final route = data['routes'][0];
               final double durationSeconds = route['duration']?.toDouble() ?? 0.0;
-              final double distanceMeters = route['distance']?.toDouble() ?? 0.0;
-              debugPrint("[Rider] ETA bus→destination: ${(durationSeconds/60).toStringAsFixed(1)} min, ${(distanceMeters/1000).toStringAsFixed(2)} km");
-              _etaBusToDestination = "${(durationSeconds/60).ceil()} min";
+              _etaBusToDestination = "${(durationSeconds / 60).ceil()} min";
             } else {
-              debugPrint("[Rider] No route found for bus→destination");
               _etaBusToDestination = "--";
             }
           } else {
-            debugPrint("[Rider] Mapbox error for bus→destination: ${resp2.statusCode}");
             _etaBusToDestination = "--";
           }
         } else {
-          debugPrint("[Rider] TripLeg missing destination coordinates, cannot compute bus→destination ETA");
           _etaBusToDestination = "--";
         }
       } else {
-        debugPrint("[Rider] No trip suggestion, cannot compute bus→destination ETA");
         _etaBusToDestination = "--";
       }
     } catch (e) {
-      debugPrint("[Rider] Exception fetching ETAs: $e");
       _etaBusToRider = _etaBusToDestination = "--";
     }
-    if (mounted) setState(() { _isFetchingEta = false; });
+    if (mounted) setState(() => _isFetchingEta = false);
   }
 
   @override
   Widget build(BuildContext context) {
-    // final colorScheme = Theme.of(context).colorScheme;
-
     return Scaffold(
-      // Use a dark background that matches the map style
       backgroundColor: const Color(0xFF12161A),
       body: SlidingUpPanel(
         controller: _panelController,
-        minHeight: 200, // Peek height (approx 30%)
+        minHeight: 200,
         maxHeight: MediaQuery.of(context).size.height * 0.8,
         parallaxEnabled: true,
         parallaxOffset: 0.5,
-        color: Colors.transparent, // Panel itself is transparent
+        color: Colors.transparent,
         panelBuilder: (sc) => BusBottomSheet(
           scrollController: sc,
           currentView: _currentView,
@@ -295,211 +252,71 @@ class _RiderHomeScreenState extends State<RiderHomeScreen> with TickerProviderSt
     return FlutterMap(
       mapController: _mapController,
       options: MapOptions(
-        initialCenter: const LatLng(34.1216, 35.6489), // Fallback to Jbeil
+        initialCenter: const LatLng(34.1216, 35.6489),
         initialZoom: 15.0,
-        onTap: (_, __) {
-          setState(() => _selectedBus = null);
-          if (_panelController.isPanelOpen) {
-            _panelController.close();
-          }
-        },
+        onTap: (_, __) {},
       ),
       children: [
         TileLayer(
-          // Using a dark theme from CartoDB
-          urlTemplate: 'https://{s}.basemaps.cartocdn.com/dark_all/{z}/{x}/{y}{r}.png',
-          subdomains: const ['a', 'b', 'c', 'd'],
-          userAgentPackageName: 'com.bosta.app',
-        ),
-        if (_currentPosition != null) _buildUserLocationMarker(),
-        if (_nearbyBuses.isNotEmpty) _buildBusMarkers(),
-      ],
-    );
-  }
-
-  MarkerLayer _buildBusMarkers() {
-    final markers = _nearbyBuses.map((bus) {
-      final isSelected = _selectedBus?.id == bus.id;
-      return Marker(
-        width: isSelected ? 80 : 60,
-        height: isSelected ? 80 : 60,
-        point: LatLng(bus.latitude, bus.longitude),
-        child: GestureDetector(
-          onTap: () => setState(() => _selectedBus = bus),
-          child: _BusMarker(
-            pulseController: _pulseController,
-            isSelected: isSelected,
-            busColor: const Color(0xFF2ED8C3), // Add the required color
-          ),
-        ),
-      );
-    }).toList();
-
-    return MarkerLayer(markers: markers);
-  }
-
-  MarkerLayer _buildUserLocationMarker() {
-    return MarkerLayer(
-      markers: [
-        Marker(
-          width: 24,
-          height: 24,
-          point: LatLng(_currentPosition!.latitude, _currentPosition!.longitude),
-          child: Container(
-            decoration: BoxDecoration(
-              shape: BoxShape.circle,
-              color: const Color(0xFF2ED8C3),
-              border: Border.all(color: Colors.white, width: 3),
-              boxShadow: [
-                BoxShadow(
-                  color: const Color(0xFF2ED8C3).withOpacity(0.5),
-                  blurRadius: 10,
-                  spreadRadius: 5,
-                ),
-              ],
-            ),
-          ),
+          urlTemplate: "https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png",
+          subdomains: ['a', 'b', 'c'],
         ),
       ],
     );
   }
 
   Widget _buildGradientOverlay(BuildContext context) {
-    return IgnorePointer(
-      child: Container(
-        decoration: BoxDecoration(
-          gradient: LinearGradient(
-            colors: [
-              const Color(0xFF12161A).withOpacity(0.8),
-              const Color(0xFF12161A).withOpacity(0.0),
-            ],
-            begin: Alignment.topCenter,
-            end: Alignment.center,
-            stops: const [0.0, 0.4],
-          ),
-        ),
-      ),
-    );
-  }
-
-  Widget _buildInitialLoadingIndicator() {
     return Positioned(
-      top: 160, // Position below the header UI
+      top: 0,
       left: 0,
       right: 0,
-      child: Center(
-        child: Container(
-          padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 8),
-          decoration: BoxDecoration(
-            color: Colors.black.withOpacity(0.6),
-            borderRadius: BorderRadius.circular(20),
+      child: Container(
+        height: 120,
+        decoration: const BoxDecoration(
+          gradient: LinearGradient(
+            colors: [Color(0xFF12161A), Colors.transparent],
+            begin: Alignment.topCenter,
+            end: Alignment.bottomCenter,
           ),
-          child: Text("Finding your location...",
-              style: GoogleFonts.urbanist(color: Colors.white)),
         ),
       ),
     );
   }
 
   Widget _buildHeaderUI() {
-    return SafeArea(
-      child: Padding(
-        padding: const EdgeInsets.symmetric(horizontal: 16.0, vertical: 8.0),
-        child: Column(
-          children: [
-            DualSearchBar(
-              onDestinationSubmitted: (destination) {
-                _fetchTripSuggestions("Current Location", destination);
-              },
+    return Positioned(
+      top: 40,
+      left: 16,
+      right: 16,
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.stretch,
+        children: [
+          Text(
+            "Plan Your Trip",
+            textAlign: TextAlign.center,
+            style: GoogleFonts.urbanist(
+              fontSize: 28,
+              fontWeight: FontWeight.bold,
+              color: Colors.white,
             ),
-            const SizedBox(height: 16),
-            CupertinoSlidingSegmentedControl<RiderView>(
-              groupValue: _currentView,
-              backgroundColor: Colors.black.withOpacity(0.4),
-              thumbColor: const Color(0xFF2ED8C3),
-              padding: const EdgeInsets.all(4),
-              onValueChanged: (view) {
-                if (view != null) {
-                  _onViewChanged(view);
-                }
-              },
-              children: {
-                RiderView.planTrip: _buildSegment("Plan Trip"),
-                RiderView.nearbyBuses: _buildSegment("Nearby Buses"),
-              },
+          ),
+          const SizedBox(height: 8),
+          Text(
+            "Find the best routes and buses near you.",
+            textAlign: TextAlign.center,
+            style: GoogleFonts.urbanist(
+              fontSize: 16,
+              color: Colors.grey[400],
             ),
-          ],
-        ),
+          ),
+        ],
       ),
     );
   }
 
-  Widget _buildSegment(String text) {
-    return Padding(
-      padding: const EdgeInsets.symmetric(horizontal: 20, vertical: 8),
-      child: Text(
-        text,
-        style: GoogleFonts.urbanist(
-          color: Colors.white,
-          fontWeight: FontWeight.w600,
-        ),
-      ),
-    );
-  }
-}
-
-class _BusMarker extends StatelessWidget {
-  final AnimationController pulseController;
-  final bool isSelected;
-  final Color busColor;
-
-  const _BusMarker({
-    required this.pulseController,
-    this.isSelected = false,
-    required this.busColor,
-  });
-
-  @override
-  Widget build(BuildContext context) {
-    return Stack(
-      alignment: Alignment.center,
-      children: [
-        FadeTransition(
-          opacity: Tween<double>(begin: 1.0, end: 0.5).animate(pulseController),
-          child: ScaleTransition(
-            scale: Tween<double>(begin: 1.0, end: 1.5).animate(pulseController),
-            child: Container(
-              decoration: BoxDecoration(
-                shape: BoxShape.circle,
-                color: busColor.withOpacity(0.5),
-              ),
-            ),
-          ),
-        ),
-        Container(
-          padding: const EdgeInsets.all(4),
-          decoration: BoxDecoration(
-            shape: BoxShape.circle,
-            color: isSelected ? Colors.white : const Color(0xFF12161A),
-            border: Border.all(
-              color: busColor,
-              width: isSelected ? 3 : 2,
-            ),
-            boxShadow: [
-              BoxShadow(
-                color: busColor.withOpacity(0.7),
-                blurRadius: 10,
-                spreadRadius: 2,
-              ),
-            ],
-          ),
-          child: Icon(
-            Icons.directions_bus,
-            color: isSelected ? const Color(0xFF12161A) : busColor,
-            size: 20,
-          ),
-        ),
-      ],
+  Widget _buildInitialLoadingIndicator() {
+    return const Center(
+      child: CircularProgressIndicator(color: Color(0xFF2ED8C3)),
     );
   }
 }
