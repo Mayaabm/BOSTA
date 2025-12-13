@@ -25,9 +25,12 @@ class SearchService {
   static Future<List<DestinationResult>> searchBusStops(String query) async {
     final uri = Uri.parse('${ApiEndpoints.searchStops}?search=${Uri.encodeComponent(query)}');
     try {
+      debugPrint('[SearchService] searchBusStops: GET $uri');
       final response = await http.get(uri);
+      debugPrint('[SearchService] searchBusStops: status=${response.statusCode}');
       if (response.statusCode == 200) {
         final List<dynamic> data = json.decode(response.body);
+        debugPrint('[SearchService] searchBusStops: received ${data.length} items');
         return data.map((json) {
           // Assuming the backend now returns a dictionary with stop and route info
           final location = json['location']?['coordinates'] as List?;
@@ -36,6 +39,7 @@ class SearchService {
           return DestinationResult(
             name: json['name'] ?? 'Unknown Stop',
             address: json['route_name'] ?? 'Unknown Route',
+            order: json['order'] != null ? (json['order'] is num ? (json['order'] as num).toInt() : int.parse(json['order'].toString())) : null,
             stopId: json['id']?.toString(),
             routeId: json['route_id']?.toString(),
             routeName: json['route_name']?.toString(),
@@ -44,6 +48,8 @@ class SearchService {
             source: 'bus_stop',
           );
         }).whereType<DestinationResult>().toList(); // Filter out any nulls from parsing errors
+      } else {
+        debugPrint('[SearchService] searchBusStops: non-200 response body: ${response.body}');
       }
     } catch (e) {
       debugPrint('Bus Stop Search Service Exception: $e');
@@ -55,9 +61,12 @@ class SearchService {
   static Future<List<DestinationResult>> getAllBusStops() async {
     final uri = Uri.parse(ApiEndpoints.searchStops); // No query parameter
     try {
+      debugPrint('[SearchService] getAllBusStops: GET $uri');
       final response = await http.get(uri);
+      debugPrint('[SearchService] getAllBusStops: status=${response.statusCode}');
       if (response.statusCode == 200) {
         final List<dynamic> data = json.decode(response.body);
+        debugPrint('[SearchService] getAllBusStops: received ${data.length} items');
         return data.map((json) {
           final location = json['location']?['coordinates'] as List?;
           if (location == null || location.length < 2) return null;
@@ -65,6 +74,7 @@ class SearchService {
           return DestinationResult(
             name: json['name'] ?? 'Unknown Stop',
             address: json['route_name'] ?? 'Unknown Route',
+            order: json['order'] != null ? (json['order'] is num ? (json['order'] as num).toInt() : int.parse(json['order'].toString())) : null,
             stopId: json['id']?.toString(),
             routeId: json['route_id']?.toString(),
             routeName: json['route_name']?.toString(),

@@ -38,13 +38,16 @@ class _WhereToSearchBarState extends State<WhereToSearchBar> {
       debounceDuration: const Duration(milliseconds: 500), // Handled by the package
       suggestionsCallback: (pattern) async {
         // Fetch all stops to act like a dropdown, then filter locally.
+        debugPrint('[WhereToSearchBar] suggestionsCallback: pattern="$pattern"');
         final allStops = await SearchService.getAllBusStops();
+        debugPrint('[WhereToSearchBar] suggestionsCallback: fetched ${allStops.length} stops');
         if (pattern.isEmpty) {
           return allStops; // Show all stops if search is empty
         }
         // Filter the list based on the user's input
-        return allStops.where((stop) =>
-            stop.name.toLowerCase().contains(pattern.toLowerCase())).toList();
+        final filtered = allStops.where((stop) => stop.name.toLowerCase().contains(pattern.toLowerCase())).toList();
+        debugPrint('[WhereToSearchBar] suggestionsCallback: filtered -> ${filtered.length} matches');
+        return filtered;
       },
       itemBuilder: (context, suggestion) {
         return ListTile(
@@ -62,6 +65,8 @@ class _WhereToSearchBarState extends State<WhereToSearchBar> {
       },
       onSelected: (suggestion) {
         _controller.text = suggestion.name;
+        // Log the selected stop's number (order) and its route for debugging
+        debugPrint('[WhereToSearchBar] selected stop id=${suggestion.stopId} order=${suggestion.order} route=${suggestion.routeName}');
         widget.onDestinationSelected(suggestion);
       },
       decorationBuilder: (context, child) {

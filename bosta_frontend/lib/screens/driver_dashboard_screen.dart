@@ -1,6 +1,5 @@
 
 import 'dart:async';
-
 import 'package:bosta_frontend/models/app_route.dart';
 import 'package:bosta_frontend/services/auth_service.dart';
 import 'package:flutter/material.dart';
@@ -10,6 +9,7 @@ import 'package:google_fonts/google_fonts.dart';
 import 'package:latlong2/latlong.dart' as fm;
 import 'package:provider/provider.dart';
 import '../services/bus_service.dart';
+import 'package:bosta_frontend/services/api_endpoints.dart';
 import 'package:flutter/foundation.dart';
 import 'dart:convert';
 import 'package:http/http.dart' as http;
@@ -29,6 +29,8 @@ class _DriverDashboardScreenState extends State<DriverDashboardScreen> with Sing
   geo.Position? _currentPosition;
   StreamSubscription<geo.Position>? _positionStream;
   Timer? _updateTimer;
+  Timer? _busPollTimer;
+  fm.LatLng? _busLocation;
   late final AnimationController _pulseController;
   late final Animation<double> _pulseAnimation;
   AppRoute? _assignedRoute;
@@ -56,6 +58,7 @@ class _DriverDashboardScreenState extends State<DriverDashboardScreen> with Sing
   void dispose() {
     _positionStream?.cancel();
     _updateTimer?.cancel();
+    _busPollTimer?.cancel();
     _pulseController.dispose();
     super.dispose();
   }
@@ -81,6 +84,36 @@ class _DriverDashboardScreenState extends State<DriverDashboardScreen> with Sing
     });
 
     await _checkLocationPermission();
+    // Start polling backend bus location so simulated updates are visible on this screen
+    _startBusPolling();
+  }
+
+  void _startBusPolling() {
+    final authService = Provider.of<AuthService>(context, listen: false);
+    final busId = authService.currentState.driverInfo?.busId?.toString();
+    final token = authService.currentState.token;
+    if (busId == null || token == null) return;
+
+    _busPollTimer?.cancel();
+    _busPollTimer = Timer.periodic(const Duration(seconds: 2), (_) async {
+      try {
+        final uri = Uri.parse('${ApiEndpoints.busDetails(busId)}');
+        final res = await http.get(uri, headers: {'Authorization': 'Bearer $token', 'Content-Type': 'application/json'});
+        if (res.statusCode == 200) {
+          final data = json.decode(res.body);
+          final current = data['current_point'];
+          if (current != null && current['coordinates'] != null) {
+            final coords = current['coordinates'];
+            final lon = (coords[0] as num).toDouble();
+            final lat = (coords[1] as num).toDouble();
+            final loc = fm.LatLng(lat, lon);
+            setState(() => _busLocation = loc);
+          }
+        }
+      } catch (e) {
+        // ignore polling errors silently
+      }
+    });
   }
 
   Future<void> _checkLocationPermission() async {
@@ -132,12 +165,20 @@ class _DriverDashboardScreenState extends State<DriverDashboardScreen> with Sing
 
     _positionStream = geo.Geolocator.getPositionStream(locationSettings: locationSettings).listen((position) {
       setState(() => _currentPosition = position);
-      // Send the new location to the backend so riders can see this bus
+
+      // Only send device GPS updates to backend when there's no active trip/simulation.
+      // When a trip is active the simulation (server-side or external simulator) should be
+      // the single source of truth for bus location updates.
       try {
         final authService = Provider.of<AuthService>(context, listen: false);
         final token = authService.currentState.token;
         final busId = authService.currentState.driverInfo?.busId;
-        if (token != null && busId != null) {
+
+        // If `active_trip_id` is set in the raw driver profile we assume a trip/simulation
+        // is running and skip sending device GPS updates.
+        final bool hasActiveTrip = authService.rawDriverProfile?['active_trip_id'] != null;
+
+        if (!hasActiveTrip && token != null && busId != null) {
           BusService.updateLocation(
             busId: busId.toString(),
             latitude: position.latitude,
@@ -194,7 +235,10 @@ class _DriverDashboardScreenState extends State<DriverDashboardScreen> with Sing
         return {'routes': []};
       }
 
-      final origin = '${_currentPosition!.longitude},${_currentPosition!.latitude}';
+        // Use simulated bus location if available, otherwise use device GPS
+        final originLatLng = _busLocation ?? (_currentPosition != null ? fm.LatLng(_currentPosition!.latitude, _currentPosition!.longitude) : null);
+        if (originLatLng == null) return {'routes': []};
+        final origin = '${originLatLng.longitude},${originLatLng.latitude}';
       final destStop = _assignedRoute!.stops.last.location;
       final dest = '${destStop.longitude},${destStop.latitude}';
 
@@ -241,17 +285,96 @@ class _DriverDashboardScreenState extends State<DriverDashboardScreen> with Sing
         ),
         if (_assignedRoute != null)
           PolylineLayer(
+            // Draw a soft halo under the main line to reduce blocky appearance,
+            // then a thinner semi-transparent main line so it blends with the map.
             polylines: [
               Polyline(
                 points: _assignedRoute!.geometry,
-                color: const Color(0xFF2ED8C3),
-                strokeWidth: 5,
+                color: Colors.black.withOpacity(0.10),
+                strokeWidth: 8.0,
+              ),
+              Polyline(
+                points: _assignedRoute!.geometry,
+                color: Color(0xFF2ED8C3).withOpacity(0.85),
+                strokeWidth: 4.0,
               ),
             ],
           ),
+        // Show route start/end using the driver's selected start/end stops
+        // (fall back to first/last stops if no selection). Use slightly
+        // larger icon-style markers so they are clearer across devices.
+        if (_assignedRoute != null && _assignedRoute!.stops.isNotEmpty)
+          Builder(builder: (context) {
+            final authService = Provider.of<AuthService>(context, listen: false);
+            final selectedStartId = authService.currentState.selectedStopId;
+            final selectedEndId = authService.currentState.selectedEndStopId;
+
+            // Helper to find a stop by id or fallback to first/last
+            dynamic findStart() {
+              if (selectedStartId != null) {
+                try {
+                  return _assignedRoute!.stops.firstWhere((s) => s.id == selectedStartId);
+                } catch (_) {}
+              }
+              return _assignedRoute!.stops.first;
+            }
+
+            dynamic findEnd() {
+              if (selectedEndId != null) {
+                try {
+                  return _assignedRoute!.stops.firstWhere((s) => s.id == selectedEndId);
+                } catch (_) {}
+              }
+              return _assignedRoute!.stops.last;
+            }
+
+            final startStop = findStart();
+            final endStop = findEnd();
+
+            return MarkerLayer(
+              markers: [
+                Marker(
+                  point: fm.LatLng(startStop.location.latitude, startStop.location.longitude),
+                  width: 28,
+                  height: 28,
+                  child: Container(
+                    alignment: Alignment.center,
+                    child: Container(
+                      width: 24,
+                      height: 24,
+                      decoration: BoxDecoration(
+                        shape: BoxShape.circle,
+                        color: Colors.green,
+                        border: Border.all(color: Colors.white, width: 2.0),
+                      ),
+                      child: const Icon(Icons.play_arrow, size: 14, color: Colors.white),
+                    ),
+                  ),
+                ),
+                Marker(
+                  point: fm.LatLng(endStop.location.latitude, endStop.location.longitude),
+                  width: 28,
+                  height: 28,
+                  child: Container(
+                    alignment: Alignment.center,
+                    child: Container(
+                      width: 24,
+                      height: 24,
+                      decoration: BoxDecoration(
+                        shape: BoxShape.circle,
+                        color: Colors.red,
+                        border: Border.all(color: Colors.white, width: 2.0),
+                      ),
+                      child: const Icon(Icons.stop, size: 12, color: Colors.white),
+                    ),
+                  ),
+                ),
+              ],
+            );
+          }),
         MarkerLayer(
           markers: [
-            if (_currentPosition != null)
+            if (_busLocation == null && _currentPosition != null)
               Marker(
                 point: fm.LatLng(_currentPosition!.latitude, _currentPosition!.longitude),
                 width: 80,
@@ -281,6 +404,42 @@ class _DriverDashboardScreenState extends State<DriverDashboardScreen> with Sing
                               boxShadow: [
                                 BoxShadow(color: Colors.blue.withOpacity(0.6), blurRadius: 8, spreadRadius: 1),
                               ],
+                            ),
+                          ),
+                        ],
+                      ),
+                    );
+                  },
+                ),
+              ),
+            if (_busLocation != null)
+              Marker(
+                point: _busLocation!,
+                width: 64,
+                height: 64,
+                child: AnimatedBuilder(
+                  animation: _pulseAnimation,
+                  builder: (context, child) {
+                    final double scale = _pulseAnimation.value;
+                    return Center(
+                      child: Stack(
+                        alignment: Alignment.center,
+                        children: [
+                          Container(
+                            width: 20 * scale,
+                            height: 20 * scale,
+                            decoration: BoxDecoration(
+                              shape: BoxShape.circle,
+                              color: Colors.blue.withOpacity(0.20 * (2 - scale)),
+                            ),
+                          ),
+                          Container(
+                            width: 12,
+                            height: 12,
+                            decoration: BoxDecoration(
+                              shape: BoxShape.circle,
+                              color: Colors.blue,
+                              boxShadow: [BoxShadow(color: Colors.blue.withOpacity(0.6), blurRadius: 8, spreadRadius: 1)],
                             ),
                           ),
                         ],

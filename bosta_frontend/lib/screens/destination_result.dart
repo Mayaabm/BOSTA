@@ -2,6 +2,7 @@ class DestinationResult {
   final String name;
   final String? address; // Optional address/subtitle
   final String? stopId;
+  final int? order;
   final String? routeId;
   final String? routeName;
   final double latitude;
@@ -11,6 +12,7 @@ class DestinationResult {
   DestinationResult({
     required this.name,
     this.address,
+    this.order,
     this.stopId,
     this.routeId,
     this.routeName,
@@ -21,6 +23,6 @@ class DestinationResult {
 
   @override
   String toString() {
-    return 'DestinationResult(name: $name, stopId: $stopId, routeId: $routeId, lat: $latitude, lon: $longitude, source: $source)';
+    return 'DestinationResult(name: $name, stopId: $stopId, order: $order, routeId: $routeId, lat: $latitude, lon: $longitude, source: $source)';
   }
 }

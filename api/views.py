@@ -453,6 +453,31 @@ def update_bus_location(request):
     Updates the real-time location of a bus.
     Expected POST data: {'bus_id': '...', 'latitude': '...', 'longitude': '...'}
     """
+    # Diagnostic logging to identify who/what is posting location updates
+    try:
+        auth_hdr = request.META.get('HTTP_AUTHORIZATION') or request.META.get('Authorization')
+        remote_addr = request.META.get('REMOTE_ADDR')
+        xff = request.META.get('HTTP_X_FORWARDED_FOR')
+        ua = request.META.get('HTTP_USER_AGENT')
+        masked = _masked_token_from_request(request)
+        # request.data can be a QueryDict; convert to dict for logging
+        try:
+            body_preview = dict(request.data)
+        except Exception:
+            body_preview = str(request.body)[:200]
+        logger.warning(f"[update_bus_location] POST from {remote_addr} xff={xff} auth_mask={masked} ua={ua} body={body_preview}")
+    except Exception:
+        logger.exception("[update_bus_location] Failed to produce diagnostic log for incoming request")
+
+    # SECURITY GUARD: Only accept location updates from the trusted simulator.
+    # Require the client to set header `X-SIMULATOR: true` on simulator requests.
+    # This is a temporary protection to ensure only the user's simulation script
+    # updates real-time bus locations while debugging.
+    sim_header = request.META.get('HTTP_X_SIMULATOR')
+    if sim_header != 'true':
+        logger.warning(f"[update_bus_location] Rejected POST - missing X-SIMULATOR header from {request.META.get('REMOTE_ADDR')} ua={request.META.get('HTTP_USER_AGENT')}")
+        return Response({"error": "Forbidden: location updates require X-SIMULATOR header."}, status=403)
+
     bus_id = request.data.get('bus_id')
     latitude = request.data.get('latitude')
     longitude = request.data.get('longitude')
@@ -678,17 +703,26 @@ def create_and_start_trip(request):
             status=Trip.STATUS_STARTED # Start as active
         )
 
-        # --- FIX: Spawn the background simulator right away ---
-        # Since the trip is now started, we should also begin the simulation
-        # immediately, just as the dedicated `start_trip` view does.
-        # We can reuse the `_start_trip_simulation` helper function for this.
-        try:
-            from .views import _start_trip_simulation # Local import to avoid circular dependency issues
-            simulation_thread = threading.Thread(target=_start_trip_simulation, args=(new_trip.id,), daemon=True)
-            simulation_thread.start()
-            logger.info(f"create_and_start_trip: Spawned simulation for new trip {new_trip.id}")
-        except Exception as e:
-            logger.error(f"create_and_start_trip: Failed to spawn simulation thread for trip {new_trip.id}: {e}")
+        # Decide whether to spawn the background simulator.
+        # Default behaviour now follows the global setting `BUS_SIMULATION_ENABLED`.
+        # Callers may still pass `simulate: false` in the POST body to override.
+        from django.conf import settings as django_settings
+        simulate = request.data.get('simulate', None)
+        # Normalize common string values (e.g. 'false') to booleans
+        if isinstance(simulate, str):
+            simulate = simulate.strip().lower() not in ('false', '0', 'no', 'n', 'off', 'none', 'null', '')
+        elif simulate is None:
+            simulate = getattr(django_settings, 'BUS_SIMULATION_ENABLED', False)
+        else:
+            simulate = bool(simulate)
+
+        if simulate:
+            # Server-side simulation helper has been removed. Honor the request
+            # but do not spawn any background simulator; callers should use an
+            # external simulator or device updates to emit positions.
+            logger.info(f"create_and_start_trip: simulate requested but server-side simulator removed; simulate flag ignored for trip {new_trip.id}")
+        else:
+            logger.info(f"create_and_start_trip: create trip {new_trip.id} without spawning simulator (simulate=False)")
 
         logger.info(f"create_and_start_trip: Created Trip ID {new_trip.id} for Bus {bus.id} on Route {route.name}")
         return Response({"trip_id": new_trip.id}, status=status.HTTP_201_CREATED)
@@ -699,54 +733,9 @@ def create_and_start_trip(request):
         logger.exception("create_and_start_trip: An unexpected error occurred.")
         return Response({"error": str(e)}, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
 
-def _start_trip_simulation(trip_pk, speed=10.0, interval=2.0):
-    """
-    Helper function to run the trip simulation in a background thread.
-    Can be called from any view that needs to start a simulation.
-    """
-    try:
-        t = Trip.objects.select_related('route', 'bus').get(pk=trip_pk)
-        route = t.route
-        bus = t.bus
-        if not route or not bus:
-            logger.error(f"Cannot simulate trip {trip_pk}: missing route or bus.")
-            return
-
-        # Set initial location immediately to prevent race conditions
-        if route.geometry:
-            initial_point = route.geometry.interpolate_normalized(0)
-            bus.current_location = initial_point
-            bus.last_reported_at = dj_timezone.now()
-            bus.save(update_fields=['current_location', 'last_reported_at'])
-            logger.info(f"_start_trip_simulation: Set initial location for bus {bus.id} to start of route {route.id}")
-
-        coords = list(route.geometry.coords)
-        points = [Point(c[0], c[1], srid=4326) for c in coords]
-        
-        for i in range(len(points)):
-            point = points[i]
-            lon, lat = point.x, point.y
-
-            heading = None
-            if i < len(points) - 1:
-                nlon, nlat = points[i + 1].x, points[i + 1].y
-                dy = nlat - lat
-                dx = nlon - lon
-                heading = math.degrees(math.atan2(dy, dx))
-
-            VehiclePosition.objects.create(bus=bus, location=point, heading_deg=heading, speed_mps=speed)
-            bus.current_location = point
-            bus.last_reported_at = dj_timezone.now()
-            bus.save(update_fields=['current_location', 'last_reported_at'])
-
-            time.sleep(interval)
-
-        t.status = Trip.STATUS_FINISHED
-        t.finished_at = dj_timezone.now()
-        t.save(update_fields=['status', 'finished_at'])
-        logger.info(f"Simulation for trip {t.id} finished.")
-    except Exception:
-        logger.exception(f"_start_trip_simulation: unexpected error in background simulator for trip {trip_pk}")
+    # NOTE: The previous `_start_trip_simulation` helper has been removed.
+    # Server-side automatic simulation is intentionally disabled. Vehicle
+    # positions should be provided by device clients or external simulators.
 
 @api_view(['POST'])
 def register_user(request):
@@ -1043,9 +1032,13 @@ def stop_list(request):
             try:
                 geom = s.location
                 coords = [geom.x, geom.y] if geom is not None else [0.0, 0.0]
+                # `Stop` model historically did not include a `name` field.
+                # Provide a safe fallback so the API returns usable entries
+                # instead of silently skipping them due to AttributeError.
+                name = getattr(s, 'name', f"Stop {s.order}")
                 out.append({
                     'id': s.id,
-                    'name': s.name,
+                    'name': name,
                     'order': s.order,
                     'route_id': s.route.id if s.route else None,
                     'route_name': s.route.name if s.route else None,
@@ -1091,8 +1084,27 @@ def start_trip(request, trip_id):
         logger.info(f"start_trip: Set initial location for bus {trip.bus.id} to start of route {trip.route.id}")
 
     # --- REFACTOR: Use the centralized simulation helper ---
-    simulation_thread = threading.Thread(target=_start_trip_simulation, args=(trip.id,), daemon=True)
-    simulation_thread.start()
+    # Respect the global BUS_SIMULATION_ENABLED setting and allow an
+    # explicit `simulate` override in the POST body (e.g. simulate=false).
+    from django.conf import settings as django_settings
+    simulate = None
+    try:
+        simulate = request.data.get('simulate', None)
+    except Exception:
+        simulate = None
+
+    if isinstance(simulate, str):
+        simulate = simulate.strip().lower() not in ('false', '0', 'no', 'n', 'off', 'none', 'null', '')
+    elif simulate is None:
+        simulate = getattr(django_settings, 'BUS_SIMULATION_ENABLED', False)
+    else:
+        simulate = bool(simulate)
+
+    if simulate:
+        # Server-side simulation helper was removed; do not start any thread.
+        logger.info(f"start_trip: simulate requested but server-side simulator removed; simulate flag ignored for trip {trip.id}")
+    else:
+        logger.info(f"start_trip: trip {trip.id} started without background simulation (simulate=False)")
 
     return Response({"status": "started", "trip_id": str(trip.id)})
 

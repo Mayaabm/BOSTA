@@ -105,9 +105,32 @@ for filename in all_files:
                     print(f"   ⚙️ No 'ref' or 'name' found. Assigning stop to closest route: '{route.name}' (distance: {min_dist:.2f}m)")
             
             try:
-                stop_order = props.get("order", route.stops.count() + 1)
-                Stop.objects.get_or_create(route=route, order=stop_order, defaults={"location": point})
-                print(f"   🧭 Linked stop to route '{route.name}'")
+                # Determine stop order (ensure int)
+                raw_order = props.get("order")
+                if raw_order is None:
+                    stop_order = route.stops.count() + 1 if route is not None else 1
+                else:
+                    try:
+                        stop_order = int(raw_order)
+                    except Exception:
+                        stop_order = route.stops.count() + 1 if route is not None else 1
+
+                # Prefer explicit stop name fields; fall back to 'ref' or generated name
+                stop_name = None
+                for key in ("name", "stop_name", "stop_name_en", "ref", "stop_ref", "title"):
+                    v = props.get(key)
+                    if v:
+                        stop_name = str(v)
+                        break
+                if not stop_name:
+                    stop_name = f"Stop {stop_order}"
+
+                Stop.objects.get_or_create(
+                    route=route,
+                    order=stop_order,
+                    defaults={"location": point, "name": stop_name},
+                )
+                print(f"   🧭 Linked stop to route '{route.name if route else 'None'}' as '{stop_name}' (order={stop_order})")
             except Exception as e:
                 print(f"   ❌ Could not create stop for route '{route.name if route else 'None'}'. Error: {e}")
 

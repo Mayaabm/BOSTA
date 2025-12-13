@@ -49,6 +49,8 @@ class Route(models.Model):
 class Stop(models.Model):
     route = models.ForeignKey(Route, related_name='stops', on_delete=models.CASCADE)
     order = models.IntegerField(help_text="The order of the stop along the route")
+    # Optional human-readable stop name (populated from import data when available)
+    name = models.CharField(max_length=255, null=True, blank=True)
     location = models.PointField(srid=4326, help_text="The geographical location of the stop")
 
     class Meta:

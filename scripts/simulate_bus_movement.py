@@ -14,6 +14,7 @@ from typing import List, Tuple, Optional
 
 import requests
 import getpass
+import traceback
 
 
 def haversine_m(a: Tuple[float, float], b: Tuple[float, float]) -> float:
@@ -123,6 +124,8 @@ def run_simulation(points: List[Tuple[float, float]], bus_id: str, base_url: str
     headers = {'Content-Type': 'application/json'}
     if token:
         headers['Authorization'] = f"Bearer {token}"
+    # Mark requests from this script so the server can allow simulator writes.
+    headers['X-SIMULATOR'] = 'true'
 
     seg_lengths = segment_distances(points)
 
@@ -255,6 +258,16 @@ def main(argv=None):
     p.add_argument('--interactive', action='store_true', help='Ask for missing inputs interactively')
     args = p.parse_args(argv)
 
+    # Temporary logger for interactive/login phase (configured before full logging setup)
+    temp_logger = logging.getLogger('simbus_interactive')
+    temp_level = logging.DEBUG if getattr(args, 'verbose', False) else logging.INFO
+    if not temp_logger.handlers:
+        temp_handler = logging.StreamHandler()
+        temp_formatter = logging.Formatter('%(asctime)s %(levelname)s %(message)s')
+        temp_handler.setFormatter(temp_formatter)
+        temp_logger.addHandler(temp_handler)
+    temp_logger.setLevel(temp_level)
+
     # non-interactive or interactive flow (keeps behavior from original)
     points = None
     if args.interactive:
@@ -271,14 +284,23 @@ def main(argv=None):
                 password = getpass.getpass('Password: ')
                 for base in bases:
                     try:
-                        r = requests.post(f"{base}/driver_login/", json={'email': email, 'password': password}, timeout=10)
+                        temp_logger.info('Attempting driver login to %s for %s', base, email)
+                        # API defines the endpoint as /driver/login/ (not driver_login)
+                        r = requests.post(f"{base}/driver/login/", json={'email': email, 'password': password}, timeout=10)
+                        temp_logger.debug('driver_login response status=%s text=%s', r.status_code, r.text)
                         if r.status_code == 200:
                             data = r.json()
                             tok = data.get('access') or data.get('token')
                             if tok:
+                                masked = tok[:10] + '...' if len(tok) > 13 else tok
+                                temp_logger.info('Got token (masked=%s) from %s', masked, base)
                                 args.token = tok
                                 break
+                        else:
+                            temp_logger.warning('Login to %s returned %s', base, r.status_code)
+                            continue
                     except Exception:
+                        temp_logger.exception('Exception during driver_login to %s', base)
                         continue
 
         # if we have a token, fetch driver/me to auto-fill info
@@ -286,19 +308,25 @@ def main(argv=None):
             headers = {'Authorization': f'Bearer {args.token}'}
             for base in bases:
                 try:
+                    temp_logger.info('Fetching driver/me from %s', base)
                     r = requests.get(f"{base}/driver/me/", headers=headers, timeout=5)
+                    temp_logger.debug('driver/me status=%s text=%s', r.status_code, r.text)
                     if r.status_code != 200:
+                        temp_logger.warning('driver/me returned non-200: %s', r.status_code)
                         continue
                     js = r.json()
+                    temp_logger.debug('driver/me json: %s', json.dumps(js)[:1000])
                     # populate bus id if available
                     bus = js.get('bus')
                     if isinstance(bus, dict):
                         try:
                             bid = bus.get('id') or bus.get('bus_id')
+                            temp_logger.info('Driver has bus object: id=%s', bid)
                             if bid and not args.bus_id:
                                 args.bus_id = str(bid)
+                                temp_logger.info('Auto-set --bus-id to %s', args.bus_id)
                         except Exception:
-                            pass
+                            temp_logger.exception('Failed to extract bus id from bus object')
                         p = _extract_point_from_geojson_point(bus.get('current_point'))
                     else:
                         p = None
@@ -309,6 +337,7 @@ def main(argv=None):
                         geom = route.get('geometry')
                         if isinstance(geom, dict) and geom.get('type') == 'LineString':
                             points = [(c[1], c[0]) for c in geom.get('coordinates')]
+                            temp_logger.info('Auto-filled route geometry from driver/me')
                         else:
                             # maybe stops only; try to derive start/end
                             stops = route.get('stops')
@@ -317,14 +346,18 @@ def main(argv=None):
                                 pN = _extract_point_from_geojson_point(stops[-1].get('location') or stops[-1].get('point'))
                                 if p0 and pN and points is None:
                                     points = [p0, pN]
+                                    temp_logger.info('Built simple route from stops (start/end)')
 
                     # active trip may contain origin/destination
                     active_trip_id = js.get('active_trip_id')
                     if active_trip_id and (p is None or points is None):
                         try:
+                            temp_logger.info('Fetching active trip %s from %s', active_trip_id, base)
                             tr = requests.get(f"{base}/trips/{active_trip_id}/", headers=headers, timeout=5)
+                            temp_logger.debug('trip response status=%s text=%s', tr.status_code, tr.text)
                             if tr.status_code == 200:
                                 tj = tr.json()
+                                temp_logger.debug('trip json keys: %s', list(tj.keys()))
                                 for key in ('origin','origin_point','start_point','start_location'):
                                     if tj.get(key) and p is None:
                                         p = _extract_point_from_geojson_point(tj.get(key))
@@ -334,17 +367,20 @@ def main(argv=None):
                                         if dest and p:
                                             points = [p, dest]
                         except Exception:
-                            pass
+                            temp_logger.exception('Failed to fetch/parse active trip %s', active_trip_id)
 
                     # if we found a starting point, set start_latlon
                     if 'p' in locals() and p:
                         args.start_latlon = f"{p[0]},{p[1]}"
+                        temp_logger.info('Auto-set --start-latlon to %s', args.start_latlon)
                     # if driver route provided start/end in variables above, set end_latlon
                     if points is not None and len(points) >= 2 and args.end_latlon is None:
                         # use last point as end
                         args.end_latlon = f"{points[-1][0]},{points[-1][1]}"
+                        temp_logger.info('Auto-set --end-latlon to %s', args.end_latlon)
                     break
                 except Exception:
+                    temp_logger.exception('Exception during driver/me processing for base %s', base)
                     continue
 
         # If token/login didn't yield points, fall back to asking user
@@ -354,30 +390,36 @@ def main(argv=None):
             use_bus_route = input('Use route assigned to this bus? (y/N): ').strip().lower() or 'n'
             if use_bus_route.startswith('y'):
                 try:
-                    for base in bases:
-                        url = f"{base}/buses/{args.bus_id}/"
-                        try:
-                            resp = requests.get(url, timeout=5)
-                            if resp.status_code == 200:
-                                bus_data = resp.json()
-                                route_obj = None
-                                for key in ('route', 'assigned_route', 'assignedRoute'):
-                                    if bus_data.get(key):
-                                        route_obj = bus_data.get(key)
-                                        break
-                                if isinstance(route_obj, dict):
-                                    geom = route_obj.get('geometry')
-                                    if isinstance(geom, dict) and geom.get('type') == 'LineString':
-                                        points = [(c[1], c[0]) for c in geom.get('coordinates')]
-                                        break
-                                    rid = route_obj.get('id') or route_obj.get('route_id')
-                                    if rid:
-                                        args.route_id = str(rid)
-                                        break
-                        except Exception:
-                            continue
+                        for base in bases:
+                            url = f"{base}/buses/{args.bus_id}/"
+                            temp_logger.info('Fetching bus data from %s', url)
+                            try:
+                                resp = requests.get(url, timeout=5)
+                                temp_logger.debug('bus resp status=%s text=%s', resp.status_code, resp.text)
+                                if resp.status_code == 200:
+                                    bus_data = resp.json()
+                                    temp_logger.debug('bus json keys: %s', list(bus_data.keys()))
+                                    route_obj = None
+                                    for key in ('route', 'assigned_route', 'assignedRoute'):
+                                        if bus_data.get(key):
+                                            route_obj = bus_data.get(key)
+                                            break
+                                    if isinstance(route_obj, dict):
+                                        geom = route_obj.get('geometry')
+                                        if isinstance(geom, dict) and geom.get('type') == 'LineString':
+                                            points = [(c[1], c[0]) for c in geom.get('coordinates')]
+                                            temp_logger.info('Loaded route geometry from bus assigned route')
+                                            break
+                                        rid = route_obj.get('id') or route_obj.get('route_id')
+                                        if rid:
+                                            args.route_id = str(rid)
+                                            temp_logger.info('Set --route-id to %s based on bus data', args.route_id)
+                                            break
+                            except Exception:
+                                temp_logger.exception('Failed to fetch bus data from %s', url)
+                                continue
                 except Exception:
-                    pass
+                        temp_logger.exception('Error while trying to auto-load route for bus %s', args.bus_id)
 
             if points is None:
                 choose = input('Provide route via (f)ile or (i)d? (f/i) [f]: ').strip().lower() or 'f'
@@ -399,8 +441,10 @@ def main(argv=None):
             tk = input('Provide token or press Enter to run in local mode (no HTTP): ').strip()
             if tk:
                 args.token = tk
+                temp_logger.info('Token provided interactively (masked=%s)', (tk[:10] + '...' if len(tk) > 13 else tk))
             else:
                 args.local = True
+                temp_logger.info('Running in local mode (no HTTP updates)')
 
     if points is None:
         if args.route_id and not args.local:

@@ -201,3 +201,7 @@ SIMPLE_JWT = {
     'AUTH_TOKEN_CLASSES': ('rest_framework_simplejwt.tokens.AccessToken',),
     'TOKEN_USER_CLASS': 'rest_framework_simplejwt.models.TokenUser',
 }
+
+# Global flag to enable/disable server-side trip simulation.
+# Set to False to prevent automatic background simulations.
+BUS_SIMULATION_ENABLED = False

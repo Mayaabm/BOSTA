@@ -20,7 +20,7 @@ class StopSerializer(serializers.ModelSerializer):
 
     class Meta:
         model = Stop
-        fields = ["id", "order", "location"]
+        fields = ["id", "name", "order", "location"]
 
 class StopNearbySerializer(serializers.ModelSerializer):
     point = PointAsGeoJSONField(source='location')
