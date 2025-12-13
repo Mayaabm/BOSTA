@@ -9,6 +9,11 @@ class CustomUserProfile(models.Model):
     phone_number = PhoneNumberField(blank=True, help_text='Contact phone number')
     current_location = models.PointField(srid=4326, null=True, blank=True)
     destination = models.PointField(srid=4326, null=True, blank=True)
+    # Track the stop and route the rider selected as their destination
+    destination_stop = models.ForeignKey('Stop', on_delete=models.SET_NULL, null=True, blank=True, related_name='riders_destination')
+    destination_route = models.ForeignKey('Route', on_delete=models.SET_NULL, null=True, blank=True, related_name='riders_destination')
+    # The stop closest to the rider when they requested planning
+    origin_stop = models.ForeignKey('Stop', on_delete=models.SET_NULL, null=True, blank=True, related_name='riders_origin')
     is_driver = models.BooleanField(default=False)
     is_commuter = models.BooleanField(default=True)
 

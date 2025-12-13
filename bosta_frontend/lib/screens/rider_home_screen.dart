@@ -431,6 +431,25 @@ class _RiderHomeScreenState extends State<RiderHomeScreen> with TickerProviderSt
     // Call the service to find trip suggestions to the selected destination.
     await _findBusesTo(LatLng(result.latitude, result.longitude));
 
+    // Also call the backend plan_trip API to compute ETA and transfer info for this stop.
+    try {
+      if (result.stopId != null && result.stopId!.isNotEmpty) {
+        final plan = await BusService.planTripToStop(
+          destinationStopId: result.stopId!,
+          latitude: _currentPosition?.latitude ?? result.latitude,
+          longitude: _currentPosition?.longitude ?? result.longitude,
+        );
+        if (plan != null && plan['eta_minutes'] != null) {
+          final eta = plan['eta_minutes'];
+          ScaffoldMessenger.of(context).showSnackBar(
+            SnackBar(content: Text('Estimated arrival: ${eta} minutes')),
+          );
+        }
+      }
+    } catch (e) {
+      debugPrint('planTripToStop failed: $e');
+    }
+
     // If suggestions were found, show them.
     if (_tripSuggestions.isNotEmpty) {
       _panelController.open();
@@ -483,10 +502,14 @@ class _RiderHomeScreenState extends State<RiderHomeScreen> with TickerProviderSt
                 onTap: (_, __) => _deselectBus(),
               ),
               children: [
+                // Use CartoDB dark on mobile, Stadia dark on web (CORS-friendly)
                 TileLayer(
-                  urlTemplate: 'https://{s}.basemaps.cartocdn.com/dark_all/{z}/{x}/{y}{r}.png',
-                  subdomains: const ['a', 'b', 'c', 'd'],
+                  urlTemplate: kIsWeb
+                      ? 'https://tiles.stadiamaps.com/tiles/alidade_smooth_dark/{z}/{x}/{y}{r}.png'
+                      : 'https://{s}.basemaps.cartocdn.com/dark_all/{z}/{x}/{y}{r}.png',
+                  subdomains: kIsWeb ? const <String>[] : const ['a', 'b', 'c', 'd'],
                   userAgentPackageName: 'com.bosta.app',
+                  additionalOptions: kIsWeb ? const <String, String>{} : const <String, String>{'userAgent': 'com.bosta.app'},
                 ),
                 if (_selectedBus != null && _selectedBusRoute != null)
                   PolylineLayer(

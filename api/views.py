@@ -23,8 +23,23 @@ import math
 import json
 import os
 from django.utils import timezone as dj_timezone
+from .models import Stop
  
 logger = logging.getLogger(__name__)
+
+
+def _masked_token_from_request(req):
+    auth = req.META.get('HTTP_AUTHORIZATION') or req.META.get('Authorization')
+    if not auth:
+        return None
+    try:
+        parts = auth.split()
+        if len(parts) >= 2:
+            tok = parts[1]
+            return tok[:8] + '...' if len(tok) > 8 else tok
+    except Exception:
+        return None
+    return None
 
 
 def compute_eta(bus_pos, target_point, avg_speed_m_per_s=10.0):
@@ -59,7 +74,8 @@ def eta(request):
     target_lat = request.query_params.get('target_lat')
     target_lon = request.query_params.get('target_lon')
 
-    logger.info(f"[ETA] Request: bus_id={bus_id}, target_lat={target_lat}, target_lon={target_lon}")
+    token_mask = _masked_token_from_request(request)
+    logger.info(f"[ETA] Request: bus_id={bus_id}, token={token_mask}")
 
     if not (bus_id and target_lat and target_lon):
         logger.warning("[ETA] Missing required params")
@@ -75,18 +91,17 @@ def eta(request):
     bus_point = bus_pos.location
     target_point = Point(float(target_lon), float(target_lat), srid=4326)
 
-    logger.info(f"[ETA CALCULATION START]")
-    logger.info(f"[ETA] Driver position: LAT={bus_pos.location.y:.6f}, LON={bus_pos.location.x:.6f}")
-    logger.info(f"[ETA] Rider position: LAT={float(target_lat):.6f}, LON={float(target_lon):.6f}")
+    logger.info("[ETA CALCULATION START]")
+    logger.info(f"[ETA] Computing ETA for bus_id={bus_id}; recent_position_id={getattr(bus_pos, 'id', None)}")
 
     # Since bus_point is a geography field, .distance() returns meters.
     distance_m = bus_pos.location.distance(target_point)
-    logger.info(f"[ETA] Distance: {distance_m:.2f} meters ({distance_m/1000:.2f} km)")
+    logger.info(f"[ETA] Distance (m): {distance_m:.2f}")
 
     # Estimate average speed (e.g., 10 m/s ~ 36 km/h)
     # Use the bus's last reported speed, with a fallback.
     avg_speed_m_per_s = bus_pos.speed_mps if bus_pos.speed_mps and bus_pos.speed_mps > 0 else 10.0
-    logger.info(f"[ETA] Bus speed: {avg_speed_m_per_s:.2f} m/s ({avg_speed_m_per_s * 3.6:.2f} km/h)")
+    logger.info(f"[ETA] Bus speed (m/s): {avg_speed_m_per_s:.2f}")
     
     eta_seconds = distance_m / avg_speed_m_per_s
     logger.info(f"[ETA] ETA seconds: {eta_seconds:.2f}")
@@ -96,7 +111,7 @@ def eta(request):
         m, s = divmod(eta_seconds, 60)
         h, m = divmod(m, 60)
         eta_structured = {"hours": int(h), "minutes": int(m), "seconds": int(s)}
-        logger.info(f"[ETA] Final ETA: {eta_structured['hours']}h {eta_structured['minutes']}m {eta_structured['seconds']}s")
+        logger.info(f"[ETA] Final ETA structured: {eta_structured}")
     else:
         eta_structured = {"hours": 0, "minutes": 0, "seconds": 0}
         logger.info(f"[ETA] Driver is very close (< 10m), ETA = 0")
@@ -112,7 +127,8 @@ def eta(request):
         "last_reported": bus_pos.recorded_at,
     }
     
-    logger.info(f"[ETA] Response data: {data}")
+    # Avoid logging sensitive location coordinates in response; log summarized fields only
+    logger.info(f"[ETA] Response data summary: bus_id={data['bus_id']}, distance_m={data['distance_m']}, eta_minutes={data['estimated_arrival_minutes']}, last_reported={data['last_reported']}")
     return Response(data)
 
 
@@ -125,12 +141,13 @@ def buses_nearby(request):
     Only shows drivers that are currently logged in and have an active trip (STATUS_STARTED).
     """
     # --- Start of new logging ---
+    token_mask = _masked_token_from_request(request)
     logger.info("\n--- BUSES NEARBY DEBUG ---")
     try:
         lat = float(request.query_params.get('lat'))
         lon = float(request.query_params.get('lon'))
         radius = float(request.query_params.get('radius', 10000))  # meters
-        logger.info(f"[buses_nearby] Rider location: lat={lat}, lon={lon}, radius={radius}m")
+        logger.info(f"[buses_nearby] Request received: radius={radius}m, token={token_mask}, remote_addr={request.META.get('REMOTE_ADDR')}")
 
         user_location = Point(lon, lat, srid=4326)
 
@@ -148,7 +165,7 @@ def buses_nearby(request):
         logger.info(f"[buses_nearby] Found {buses_with_started_trip.count()} buses with a 'STARTED' trip.")
         if buses_with_started_trip.count() == 0:
             all_trips = Trip.objects.all().values('bus_id', 'status')
-            logger.warning(f"[buses_nearby] No buses have a 'STARTED' trip. Current trip statuses: {list(all_trips)}")
+            logger.warning(f"[buses_nearby] No buses have a 'STARTED' trip. Current trip statuses count={len(list(all_trips))}")
 
         # Step 3: Annotate distance for the remaining buses.
         buses_with_distance = buses_with_started_trip.annotate(
@@ -214,8 +231,20 @@ def route_list(request):
     """
     try:
         logger.info("route_list: request from %s, query_params=%s", request.META.get('REMOTE_ADDR'), request.query_params)
-        # Dump some headers useful for debugging (may include Authorization)
-        hdrs = {k: v for k, v in request.META.items() if k.startswith('HTTP_')}
+        # Dump some headers useful for debugging (mask Authorization tokens)
+        hdrs = {}
+        for k, v in request.META.items():
+            if not k.startswith('HTTP_'):
+                continue
+            if 'AUTH' in k:
+                try:
+                    # mask token value
+                    val = v.split()[1] if v and isinstance(v, str) and len(v.split()) > 1 else v
+                    hdrs[k] = (val[:8] + '...') if isinstance(val, str) and len(val) > 8 else val
+                except Exception:
+                    hdrs[k] = '***masked***'
+            else:
+                hdrs[k] = v
         logger.debug("route_list: headers=%s", hdrs)
 
         routes = Route.objects.prefetch_related('stops').all()
@@ -837,6 +866,197 @@ def buses_to_destination(request):
         except VehiclePosition.DoesNotExist:
             continue # Skip if this bus has no position data
     return Response(data)
+
+
+@api_view(['POST'])
+@permission_classes([IsAuthenticated])
+def plan_trip(request):
+    """
+    Plan a trip for an authenticated rider.
+    POST body: { "destination_stop_id": int, optional: "latitude": float, "longitude": float }
+    Records destination stop and route on the rider profile, finds the nearest origin stop,
+    and returns whether the destination is on the same route or what transfers are needed,
+    along with an ETA estimate in minutes.
+    """
+    user = request.user
+    try:
+        profile = user.profile
+    except CustomUserProfile.DoesNotExist:
+        return Response({"error": "Profile not found."}, status=404)
+
+    dest_id = request.data.get('destination_stop_id')
+    if not dest_id:
+        return Response({"error": "destination_stop_id is required"}, status=400)
+
+    try:
+        dest_stop = Stop.objects.select_related('route').get(pk=int(dest_id))
+    except Stop.DoesNotExist:
+        return Response({"error": "Destination stop not found"}, status=404)
+
+    # Determine rider location: prefer provided coords, otherwise profile.current_location
+    lat = request.data.get('latitude')
+    lon = request.data.get('longitude')
+    if lat is not None and lon is not None:
+        try:
+            lat = float(lat); lon = float(lon)
+            user_point = Point(lon, lat, srid=4326)
+            profile.current_location = user_point
+        except Exception:
+            return Response({"error": "Invalid latitude/longitude provided"}, status=400)
+    else:
+        if not profile.current_location:
+            return Response({"error": "No rider location available; provide latitude and longitude"}, status=400)
+        user_point = profile.current_location
+        lat = user_point.y; lon = user_point.x
+
+    # Save destination info on profile
+    profile.destination = dest_stop.location
+    profile.destination_stop = dest_stop
+    profile.destination_route = dest_stop.route
+    profile.save(update_fields=['destination', 'destination_stop', 'destination_route', 'current_location'])
+
+    # Helper: haversine distance in km
+    def haversine_km(lat1, lon1, lat2, lon2):
+        R = 6371.0
+        phi1 = math.radians(lat1); phi2 = math.radians(lat2)
+        dphi = math.radians(lat2 - lat1); dlmb = math.radians(lon2 - lon1)
+        a = math.sin(dphi/2)**2 + math.cos(phi1)*math.cos(phi2)*math.sin(dlmb/2)**2
+        return 2 * R * math.asin(math.sqrt(a))
+
+    # Find nearest stop to rider
+    stops = Stop.objects.select_related('route').all()
+    best = None; best_km = 1e9
+    for s in stops:
+        try:
+            s_lat = s.location.y; s_lon = s.location.x
+            dkm = haversine_km(lat, lon, s_lat, s_lon)
+            if dkm < best_km:
+                best = s; best_km = dkm
+        except Exception:
+            continue
+
+    if not best:
+        return Response({"error": "No stops configured in system."}, status=500)
+
+    profile.origin_stop = best
+    profile.save(update_fields=['origin_stop'])
+
+    origin_stop = best
+    origin_route = origin_stop.route
+    dest_route = dest_stop.route
+
+    same_route = (origin_route.id == dest_route.id)
+
+    # Compute walking distance to origin stop (meters)
+    walk_km = best_km
+    walk_minutes = (walk_km / 5.0) * 60.0  # assume 5 km/h walking speed
+
+    # Compute bus travel distance along route if same route
+    def route_segment_km(route, a_stop, b_stop):
+        stops_ordered = list(route.stops.order_by('order'))
+        # map id->index
+        idx_map = {s.id: i for i, s in enumerate(stops_ordered)}
+        if a_stop.id not in idx_map or b_stop.id not in idx_map:
+            return None
+        i = idx_map[a_stop.id]; j = idx_map[b_stop.id]
+        if i == j:
+            return 0.0
+        if i > j:
+            i, j = j, i
+        total = 0.0
+        for k in range(i, j):
+            s1 = stops_ordered[k]; s2 = stops_ordered[k+1]
+            total += haversine_km(s1.location.y, s1.location.x, s2.location.y, s2.location.x)
+        return total
+
+    bus_km = None; bus_minutes = None
+    if same_route:
+        seg_km = route_segment_km(origin_route, origin_stop, dest_stop)
+        bus_km = seg_km if seg_km is not None else 0.0
+        # Find an active started trip on this route to estimate speed
+        trip = Trip.objects.filter(route=origin_route, status=Trip.STATUS_STARTED).select_related('bus').first()
+        if trip and trip.bus and trip.bus.speed_mps and trip.bus.speed_mps > 0:
+            speed_kmh = trip.bus.speed_mps * 3.6
+        else:
+            speed_kmh = 30.0
+        bus_minutes = (bus_km / speed_kmh) * 60.0 if speed_kmh > 0 else None
+
+    transfers = []
+    if not same_route:
+        # Simple 2-hop transfer search: find a route R2 such that origin_route stops
+        # are close to R2 stops, and R2 stops are close to dest_route stops.
+        all_routes = Route.objects.prefetch_related('stops').all()
+        def close(a, b, threshold_m=200):
+            return haversine_km(a.location.y, a.location.x, b.location.y, b.location.x) * 1000.0 <= threshold_m
+
+        found_chain = None
+        for r2 in all_routes:
+            if r2.id in (origin_route.id, dest_route.id):
+                continue
+            # check origin_route -> r2
+            ok1 = any(close(s1, s2) for s1 in origin_route.stops.all() for s2 in r2.stops.all())
+            # check r2 -> dest_route
+            ok2 = any(close(s1, s2) for s1 in r2.stops.all() for s2 in dest_route.stops.all())
+            if ok1 and ok2:
+                found_chain = [origin_route.name, r2.name, dest_route.name]
+                break
+        if found_chain:
+            transfers = found_chain
+        else:
+            # fallback: suggest origin_route -> dest_route (transfer at closest stops)
+            transfers = [origin_route.name, dest_route.name]
+
+    eta_total_minutes = None
+    if bus_minutes is not None:
+        eta_total_minutes = round(walk_minutes + bus_minutes, 1)
+    else:
+        # best-effort ETA: walking to origin + straight-line from origin to dest (as fallback)
+        straight_km = haversine_km(origin_stop.location.y, origin_stop.location.x, dest_stop.location.y, dest_stop.location.x)
+        # assume vehicle speed 30 km/h
+        straight_minutes = (straight_km / 30.0) * 60.0
+        eta_total_minutes = round(walk_minutes + straight_minutes, 1)
+
+    resp = {
+        "origin_stop": {"id": origin_stop.id, "order": origin_stop.order, "route": origin_route.name},
+        "destination_stop": {"id": dest_stop.id, "order": dest_stop.order, "route": dest_route.name},
+        "same_route": same_route,
+        "transfers": transfers,
+        "walk_m": round(walk_km * 1000.0, 1),
+        "bus_km": round(bus_km, 3) if bus_km is not None else None,
+        "eta_minutes": eta_total_minutes,
+    }
+
+    return Response(resp)
+
+
+@api_view(['GET'])
+def stop_list(request):
+    """
+    Return a list of all stops with minimal route info and GeoJSON location.
+    Frontend `SearchService.getAllBusStops` depends on this returning a list
+    of objects with keys: id, name, route_id, route_name, location={type:Point, coordinates:[lon,lat]}.
+    """
+    try:
+        stops = Stop.objects.select_related('route').all()
+        out = []
+        for s in stops:
+            try:
+                geom = s.location
+                coords = [geom.x, geom.y] if geom is not None else [0.0, 0.0]
+                out.append({
+                    'id': s.id,
+                    'name': s.name,
+                    'order': s.order,
+                    'route_id': s.route.id if s.route else None,
+                    'route_name': s.route.name if s.route else None,
+                    'location': {'type': 'Point', 'coordinates': coords},
+                })
+            except Exception:
+                continue
+        return Response(out)
+    except Exception as e:
+        logger.exception('stop_list: unexpected error')
+        return Response({'error': 'Could not load stops'}, status=500)
 
 
 @api_view(['POST'])

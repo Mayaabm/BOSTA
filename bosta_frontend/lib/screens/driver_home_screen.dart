@@ -5,6 +5,7 @@ import 'package:google_fonts/google_fonts.dart';
 import 'package:provider/provider.dart';
 import '../services/auth_service.dart';
 import '../services/trip_service.dart';
+import '../services/logger.dart';
 
 class DriverHomeScreen extends StatefulWidget {
   const DriverHomeScreen({super.key});
@@ -23,20 +24,18 @@ class _DriverHomeScreenState extends State<DriverHomeScreen> {
   bool _isSavingTripSetup = false;
 
   Future<void> _startNewTrip() async {
-    debugPrint("\n\n[DriverHomeScreen] >>>>>>>>>> STARTING 'startNewTrip' PROCESS <<<<<<<<<<");
-    debugPrint("[DriverHomeScreen] --- BUTTON PRESSED: Start Trip ---");
-    debugPrint("[DriverHomeScreen] --- Current context: $context ---");
-    debugPrint("[DriverHomeScreen] --- Current mounted: $mounted ---");
-    debugPrint("[DriverHomeScreen] --- SelectedStartStopId: $_selectedStartStopId ---");
-    debugPrint("[DriverHomeScreen] --- SelectedEndStopId: $_selectedEndStopId ---");
-    debugPrint("[DriverHomeScreen] --- Provider.of<AuthService>(context, listen: false): ${Provider.of<AuthService>(context, listen: false)} ---");
+    Logger.debug('DriverHomeScreen', "STARTING 'startNewTrip' PROCESS");
+    Logger.debug('DriverHomeScreen', 'BUTTON PRESSED: Start Trip');
+    Logger.debug('DriverHomeScreen', 'Current mounted: $mounted');
+    Logger.debug('DriverHomeScreen', 'SelectedStartStopId: $_selectedStartStopId');
+    Logger.debug('DriverHomeScreen', 'SelectedEndStopId: $_selectedEndStopId');
     // If a trip is already active, just navigate to the dashboard.
     final authService = Provider.of<AuthService>(context, listen: false);
     final activeTripIdFromState = authService.rawDriverProfile?['active_trip_id']?.toString();
     if (activeTripIdFromState != null && mounted) {
       // --- FIX: If a trip is already active, navigate to its dashboard correctly. ---
       // The previous logic was missing the trip ID in the navigation path.
-      debugPrint("[DriverHomeScreen] Active trip '$activeTripIdFromState' detected. Navigating directly to dashboard.");
+      Logger.info('DriverHomeScreen', "Active trip '$activeTripIdFromState' detected. Navigating directly to dashboard.");
       GoRouter.of(context).go('/driver/dashboard/$activeTripIdFromState'); // This is the correct navigation
       return;
     }
@@ -48,21 +47,20 @@ class _DriverHomeScreenState extends State<DriverHomeScreen> {
     // The key requirements to start a trip are having a bus and an assigned route.
     final bool canStartTrip = authState.driverInfo?.busId != null && authState.assignedRoute?.id != null;
 
-    debugPrint("[DriverHomeScreen] 1. PRE-FLIGHT CHECKS...");
-    debugPrint("[_startNewTrip] Current AuthState: isAuthenticated=${authState.isAuthenticated}, role=${authState.role}");
-    debugPrint("[_startNewTrip] Token available: ${token != null}");
-    debugPrint("[_startNewTrip] Onboarding complete flag from backend: ${authState.driverInfo?.onboardingComplete}");
-    debugPrint("[_startNewTrip] Validation 'canStartTrip' (busId & routeId exist): $canStartTrip");
-    debugPrint("[_startNewTrip] Values from AuthState for trip creation:");
-    debugPrint("  > selectedStopId: ${authState.selectedStopId}");
-    debugPrint("  > selectedEndStopId: ${authState.selectedEndStopId}");
+    Logger.debug('DriverHomeScreen', 'PRE-FLIGHT CHECKS');
+    Logger.debug('DriverHomeScreen', 'Current AuthState: isAuthenticated=${authState.isAuthenticated}, role=${authState.role}');
+    Logger.debug('DriverHomeScreen', 'Token available: ${token != null}');
+    Logger.debug('DriverHomeScreen', 'Onboarding complete: ${authState.driverInfo?.onboardingComplete}');
+    Logger.debug('DriverHomeScreen', "Validation 'canStartTrip': $canStartTrip");
+    Logger.debug('DriverHomeScreen', 'selectedStopId: ${authState.selectedStopId}');
+    Logger.debug('DriverHomeScreen', 'selectedEndStopId: ${authState.selectedEndStopId}');
 
     if (token == null) {
       setState(() {
         _errorMessage = "Authentication error. Please log in again.";
         _isLoading = false;
       });
-      debugPrint("[DriverHomeScreen] X FAILED: Token is null. Aborting.");
+      Logger.error('DriverHomeScreen', 'X FAILED: Token is null. Aborting.');
       return;
     }
 
@@ -71,7 +69,7 @@ class _DriverHomeScreenState extends State<DriverHomeScreen> {
         _errorMessage = "Please complete your profile setup before starting a trip.";
         _isLoading = false;
       });
-      debugPrint("[DriverHomeScreen] X FAILED: 'canStartTrip' is false. Aborting.");
+      Logger.error('DriverHomeScreen', "X FAILED: 'canStartTrip' is false. Aborting.");
       return;
     }
 
@@ -84,7 +82,7 @@ class _DriverHomeScreenState extends State<DriverHomeScreen> {
         _errorMessage = "Your profile is incomplete. Please use the 'Edit Profile' button to provide your name, phone, and bus details.";
         _isLoading = false;
       });
-      debugPrint("[DriverHomeScreen] X FAILED: Onboarding is not complete. Aborting trip start.");
+      Logger.error('DriverHomeScreen', 'X FAILED: Onboarding is not complete. Aborting trip start.');
       return;
     }
 
@@ -95,12 +93,12 @@ class _DriverHomeScreenState extends State<DriverHomeScreen> {
         _errorMessage = "Please select both a start and end stop for your trip.";
         _isLoading = false;
       });
-      debugPrint("[DriverHomeScreen] X FAILED: Start or End stop not selected. Aborting.");
+      Logger.error('DriverHomeScreen', 'X FAILED: Start or End stop not selected. Aborting.');
       return;
     }
 
     try {
-      debugPrint("[DriverHomeScreen] 2. CALLING SERVICE: All checks passed. Calling TripService.startNewTrip...");
+      Logger.debug('DriverHomeScreen', 'CALLING SERVICE: All checks passed. Calling TripService.startNewTrip...');
       // --- FIX: The service now returns the created trip ID directly. ---
       final newTripId = await TripService.startNewTrip(
         authService,
@@ -108,35 +106,36 @@ class _DriverHomeScreenState extends State<DriverHomeScreen> {
         endStopId: authState.selectedEndStopId,
       );
 
-      debugPrint("[DriverHomeScreen] 3. SERVICE SUCCEEDED: Created trip with ID: $newTripId");
-      debugPrint("[DriverHomeScreen] --- POLLING for active_trip_id and route after trip creation ---");
+      Logger.info('DriverHomeScreen', 'SERVICE SUCCEEDED: Created trip with ID: $newTripId');
+      Logger.debug('DriverHomeScreen', 'Polling for active_trip_id and route after trip creation');
       int pollCount = 0;
       bool tripReady = false;
-      while (pollCount < 10 && mounted) {
-        await Future.delayed(const Duration(milliseconds: 300));
+      // Wait a bit longer for backend to update assigned route/active_trip
+      while (pollCount < 20 && mounted) {
+        await Future.delayed(const Duration(milliseconds: 500));
         await authService.fetchAndSetDriverProfile();
         final raw = authService.rawDriverProfile;
         final activeTripId = raw?['active_trip_id']?.toString();
         final route = raw?['route'];
-        debugPrint('[DriverHomeScreen] Poll $pollCount: active_trip_id=$activeTripId, route=${route != null ? 'present' : 'null'}');
+        Logger.debug('DriverHomeScreen', 'Poll $pollCount: active_trip_id=$activeTripId, route=${route != null ? 'present' : 'null'}');
         if (activeTripId == newTripId && route != null) {
           tripReady = true;
           break;
         }
         pollCount++;
       }
+      // Ensure we have the latest profile before navigating
+      await authService.fetchAndSetDriverProfile();
       if (!tripReady) {
-        debugPrint('[DriverHomeScreen] Timed out waiting for trip to be ready. Proceeding anyway.');
+        Logger.debug('DriverHomeScreen', 'Timed out waiting for trip to be ready. Proceeding anyway.');
       }
-      debugPrint("[DriverHomeScreen] --- NAVIGATING to /driver/dashboard/$newTripId ---");
+      Logger.info('DriverHomeScreen', 'Navigating to /driver/dashboard/$newTripId');
       final destinationUrl = '/driver/dashboard/$newTripId';
-      debugPrint("[DriverHomeScreen] 4. NAVIGATING: Preparing to navigate to: $destinationUrl");
+      Logger.debug('DriverHomeScreen', 'NAVIGATING: Preparing to navigate to: $destinationUrl');
       if (!mounted) return; // Guard against disposed context
       GoRouter.of(context).go('/driver/dashboard/$newTripId');
     } catch (e) {
-      debugPrint("[DriverHomeScreen] X CATASTROPHIC FAILURE: The 'startNewTrip' process threw an exception.");
-      debugPrint("  > Exception: $e");
-      debugPrint("  > Stack Trace: ${StackTrace.current}");
+      Logger.error('DriverHomeScreen', "CATASTROPHIC FAILURE: The 'startNewTrip' process threw an exception. $e");
       _errorMessage = "Could not start trip. Please try again. Error: $e";
       setState(() {
         _isLoading = false;
@@ -197,15 +196,31 @@ class _DriverHomeScreenState extends State<DriverHomeScreen> {
 
     if (selectedRoute != null) {
       setState(() => _isLoading = true);
-      debugPrint("[DriverHomeScreen] Attempting to update route to: ${selectedRoute.id}");
+      Logger.info('DriverHomeScreen', 'Attempting to update route to: ${selectedRoute.id}');
       final patchError = await authService.patchDriverProfile({'route_id': selectedRoute.id});
       if (patchError != null) {
-        debugPrint("[DriverHomeScreen] patchDriverProfile error: $patchError");
+        Logger.error('DriverHomeScreen', 'patchDriverProfile error: $patchError');
         ScaffoldMessenger.of(context).showSnackBar(
           SnackBar(content: Text("Backend error: $patchError")),
         );
         setState(() => _isLoading = false);
         return;
+      }
+      // Print the verbose debug blob created by AuthService for inspection
+      try {
+        Logger.debug('DriverHomeScreen', 'patch debug:\n${authService.lastPatchDebug}');
+      } catch (e) {
+        Logger.error('DriverHomeScreen', 'Could not fetch lastPatchDebug: $e');
+      }
+      // Optimistically update the local assigned route so the UI (and dashboard)
+      // shows the newly-selected route immediately while the backend finishes.
+      bool optimisticApplied = false;
+      try {
+        authService.setAssignedRouteLocally(selectedRoute);
+        optimisticApplied = true;
+        Logger.info('DriverHomeScreen', 'Optimistically set assigned route locally to ${selectedRoute.id}');
+      } catch (e) {
+        Logger.error('DriverHomeScreen', 'Failed to set assigned route locally: $e');
       }
       int pollCount = 0;
       bool routeReady = false;
@@ -214,7 +229,7 @@ class _DriverHomeScreenState extends State<DriverHomeScreen> {
         await authService.fetchAndSetDriverProfile();
         final raw = authService.rawDriverProfile;
         final route = raw?['route'];
-        debugPrint('[DriverHomeScreen] Poll $pollCount: route=${route != null ? route['id'] : 'null'} (expected: ${selectedRoute.id})');
+        Logger.debug('DriverHomeScreen', 'Poll $pollCount: route=${route != null ? route['id'] : 'null'} (expected: ${selectedRoute.id})');
         if (route != null && route['id'].toString() == selectedRoute.id.toString()) {
           routeReady = true;
           break;
@@ -222,9 +237,15 @@ class _DriverHomeScreenState extends State<DriverHomeScreen> {
         pollCount++;
       }
       if (!routeReady) {
-        ScaffoldMessenger.of(context).showSnackBar(
-          SnackBar(content: Text("Failed to update route to ${selectedRoute.id}. Please try again or check backend logs.")),
-        );
+        if (optimisticApplied) {
+          ScaffoldMessenger.of(context).showSnackBar(
+            SnackBar(content: Text("Route change applied locally; awaiting server confirmation.")),
+          );
+        } else {
+          ScaffoldMessenger.of(context).showSnackBar(
+            SnackBar(content: Text("Failed to update route to ${selectedRoute.id}. Please try again or check backend logs.")),
+          );
+        }
       }
       if (mounted) setState(() => _isLoading = false);
     }
@@ -252,13 +273,38 @@ class _DriverHomeScreenState extends State<DriverHomeScreen> {
     }
   }
 
+  Future<void> _endActiveTrip() async {
+    setState(() => _isLoading = true);
+    final authService = Provider.of<AuthService>(context, listen: false);
+    final token = authService.currentState.token;
+    final tripId = authService.rawDriverProfile?['active_trip_id']?.toString();
+    if (token == null || tripId == null) {
+      if (mounted) ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('No active trip to end.')));
+      setState(() => _isLoading = false);
+      return;
+    }
+
+    try {
+      Logger.info('DriverHomeScreen', 'Ending active trip $tripId');
+      await TripService.endTrip(token, tripId);
+      // Refresh profile so UI reflects the ended trip
+      await authService.fetchAndSetDriverProfile();
+      if (mounted) ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('Trip ended successfully.')));
+    } catch (e) {
+      Logger.error('DriverHomeScreen', 'Failed to end trip $tripId: $e');
+      if (mounted) ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text('Failed to end trip: $e')));
+    } finally {
+      if (mounted) setState(() => _isLoading = false);
+    }
+  }
+
   @override
   void didChangeDependencies() {
     super.didChangeDependencies();
-    // Sync local state with provider state when the screen is built or dependencies change
-    final authState = Provider.of<AuthService>(context, listen: false).currentState;
-    _selectedStartStopId = authState.selectedStopId;
-    _selectedEndStopId = authState.selectedEndStopId;
+    // Clear local dropdown selections on (re)entering this screen so previous
+    // trip choices don't persist across logins. Driver should pick fresh stops.
+    _selectedStartStopId = null;
+    _selectedEndStopId = null;
   }
 
   @override
@@ -274,7 +320,7 @@ class _DriverHomeScreenState extends State<DriverHomeScreen> {
     final bool hasActiveTrip = authService.rawDriverProfile?['active_trip_id'] != null;
 
     // Log the raw profile on every build to check the active_trip_id status
-    debugPrint("[DriverHomeScreen] build(): Checking raw profile. active_trip_id is: ${authService.rawDriverProfile?['active_trip_id']}");
+    Logger.info('DriverHomeScreen', 'build(): Checking raw profile. active_trip_id is: ${authService.rawDriverProfile?['active_trip_id']}');
 
     return Scaffold(
       backgroundColor: const Color(0xFF12161A),
@@ -291,7 +337,11 @@ class _DriverHomeScreenState extends State<DriverHomeScreen> {
           IconButton(
             icon: const Icon(Icons.logout),
             onPressed: () async {
-              await authService.logout();
+              final res = await authService.logout();
+              if (res != null) {
+                if (mounted) ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text(res)));
+                return; // Do not navigate away if ending trip failed
+              }
               // The router's redirect will handle navigation to the auth screen.
             },
           ),
@@ -397,6 +447,21 @@ class _DriverHomeScreenState extends State<DriverHomeScreen> {
                       shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
                     ),
                   ),
+                  const SizedBox(height: 12),
+                  if (hasActiveTrip)
+                    Center(
+                      child: OutlinedButton.icon(
+                        icon: const Icon(Icons.stop_circle, color: Colors.white),
+                        label: const Text('End Trip', style: TextStyle(color: Colors.white)),
+                        style: OutlinedButton.styleFrom(
+                          side: const BorderSide(color: Color(0xFFEF4444)),
+                          padding: const EdgeInsets.symmetric(vertical: 14, horizontal: 20),
+                        ),
+                        onPressed: () async {
+                          await _endActiveTrip();
+                        },
+                      ),
+                    ),
                 ],
               ),
       ),

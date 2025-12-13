@@ -24,6 +24,8 @@ urlpatterns = [
     # Dev-only endpoint for mock rider location
     path('dev/rider_location/', views.get_dev_rider_location, name='get_dev_rider_location'),
     path('register/', views.register_user, name='register_user'),
+    path('plan_trip/', views.plan_trip, name='plan_trip'),
+    path('stops/', views.stop_list, name='stop_list'),
 ]
 
 print("--- Finished loading api/urls.py ---")

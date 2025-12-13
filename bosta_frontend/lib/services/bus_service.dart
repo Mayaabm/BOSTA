@@ -94,30 +94,59 @@ class BusService {
     required double endLat,
     required double endLon,
   }) async {
-    final uri = Uri.parse(ApiEndpoints.planTrip).replace(queryParameters: {
-      'start_lat': startLat.toString(),
-      'start_lon': startLon.toString(),
-      'end_lat': endLat.toString(),
-      'end_lon': endLon.toString(),
-    });
-
+    // Older implementation expected a GET planTrip endpoint. Instead, use
+    // the backend `plan_trip` POST API which accepts a destination stop id
+    // or the `buses/to_destination/` endpoint. For now call `buses/to_destination`
+    // to get nearby active buses and ETA to the target point.
+    final uri = Uri.parse('${ApiEndpoints.busesToDestination}?lat=$endLat&lon=$endLon');
     try {
       final response = await http.get(uri);
       if (response.statusCode == 200) {
-        // The endpoint returns a list of suggestions, where each suggestion is a list of legs.
-        final List<dynamic> suggestionsJson = json.decode(response.body);
-        return suggestionsJson
-            .map((suggestionJson) =>
-                TripSuggestion.fromJson(suggestionJson as List<dynamic>))
-            .toList();
+        final List<dynamic> data = json.decode(response.body);
+        // Map the simple buses-to-destination format into a single-leg TripSuggestion
+        return data.map((item) {
+          final int? eta = item['eta_min'] != null ? (item['eta_min'] as num).round() : null;
+          return TripSuggestion(legs: [
+            TripLeg(
+              routeName: item['route']?.toString() ?? 'Unknown Route',
+              boardAt: 'Nearby',
+              exitAt: 'Destination',
+              available: true,
+              etaMinutes: eta,
+              destLat: endLat,
+              destLon: endLon,
+            )
+          ]);
+        }).toList();
       } else {
-        debugPrint(
-            'BusService.findTripSuggestions failed with status ${response.statusCode}: ${response.body}');
+        debugPrint('BusService.findTripSuggestions failed with status ${response.statusCode}: ${response.body}');
       }
     } catch (e) {
       debugPrint('BusService.findTripSuggestions Exception: $e');
     }
     return [];
+  }
+
+  /// Call the backend plan_trip API to get ETA and plan info for a selected stop.
+  static Future<Map<String, dynamic>?> planTripToStop({
+    required String destinationStopId,
+    required double latitude,
+    required double longitude,
+  }) async {
+    final uri = Uri.parse(ApiEndpoints.planTrip);
+    try {
+      final response = await http.post(uri, headers: {'Content-Type': 'application/json'}, body: json.encode({
+        'destination_stop_id': int.parse(destinationStopId),
+        'latitude': latitude,
+        'longitude': longitude,
+      }));
+      if (response.statusCode == 200) {
+        return json.decode(response.body) as Map<String, dynamic>;
+      }
+    } catch (e) {
+      debugPrint('BusService.planTripToStop Exception: $e');
+    }
+    return null;
   }
 
   /// Finds all active buses for a specific route ID.

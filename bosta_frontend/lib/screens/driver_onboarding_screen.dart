@@ -26,6 +26,7 @@ class _DriverOnboardingScreenState extends State<DriverOnboardingScreen> {
   String? _generalErrorMessage;
   bool _isSavingPersonalInfo = false;
   bool _isSavingVehicleInfo = false;
+  bool _hasPersonalInfo = false;
   bool _isEditMode = false;
   AppRoute? _assignedRoute;
 
@@ -33,9 +34,10 @@ class _DriverOnboardingScreenState extends State<DriverOnboardingScreen> {
   void initState() {
     super.initState();
     _isEditMode = GoRouter.of(context).routeInformationProvider.value.uri.queryParameters.containsKey('edit');
-    if (_isEditMode) {
-      WidgetsBinding.instance.addPostFrameCallback((_) => _loadExistingProfileData());
-    }
+    // Always attempt to load existing profile data after the first frame.
+    // This ensures that if the driver has already provided personal info during
+    // registration, we prefill those fields and only ask for vehicle info.
+    WidgetsBinding.instance.addPostFrameCallback((_) => _loadExistingProfileData());
   }
 
   Future<String?> _saveSection(Map<String, dynamic> data, {bool isInitialOnboard = false}) async {
@@ -64,6 +66,7 @@ class _DriverOnboardingScreenState extends State<DriverOnboardingScreen> {
     _assignedRoute = authState.assignedRoute;
 
     if (driverInfo != null) {
+      _hasPersonalInfo = (driverInfo.firstName.isNotEmpty || driverInfo.lastName.isNotEmpty || (driverInfo.phoneNumber != null && driverInfo.phoneNumber!.isNotEmpty));
       _firstNameController.text = driverInfo.firstName;
       _lastNameController.text = driverInfo.lastName;
       _phoneController.text = driverInfo.phoneNumber ?? '';
@@ -248,7 +251,7 @@ class _DriverOnboardingScreenState extends State<DriverOnboardingScreen> {
                 ],
                 onSave: _submitPersonalInfo,
                 isSaving: _isSavingPersonalInfo,
-                initiallyExpanded: true,
+                initiallyExpanded: !_hasPersonalInfo,
               ),
               _buildSection(
                 title: 'Vehicle Information',
@@ -260,6 +263,7 @@ class _DriverOnboardingScreenState extends State<DriverOnboardingScreen> {
                 ],
                 onSave: _submitVehicleInfo,
                 isSaving: _isSavingVehicleInfo,
+                initiallyExpanded: _hasPersonalInfo,
               ),
               const SizedBox(height: 24),
               if (_generalErrorMessage != null)

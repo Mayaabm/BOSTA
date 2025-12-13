@@ -1,3 +1,4 @@
+
 import 'dart:async';
 
 import 'package:bosta_frontend/models/app_route.dart';
@@ -8,6 +9,12 @@ import 'package:flutter_map/flutter_map.dart';
 import 'package:google_fonts/google_fonts.dart';
 import 'package:latlong2/latlong.dart' as fm;
 import 'package:provider/provider.dart';
+import '../services/bus_service.dart';
+import 'package:flutter/foundation.dart';
+import 'dart:convert';
+import 'package:http/http.dart' as http;
+import 'package:bosta_frontend/services/trip_service.dart';
+import 'package:bosta_frontend/services/trip_service.dart' as TS;
 
 class DriverDashboardScreen extends StatefulWidget {
   final String? tripId;
@@ -17,11 +24,14 @@ class DriverDashboardScreen extends StatefulWidget {
   State<DriverDashboardScreen> createState() => _DriverDashboardScreenState();
 }
 
-class _DriverDashboardScreenState extends State<DriverDashboardScreen> {
+class _DriverDashboardScreenState extends State<DriverDashboardScreen> with SingleTickerProviderStateMixin {
   final MapController _mapController = MapController();
   geo.Position? _currentPosition;
   StreamSubscription<geo.Position>? _positionStream;
   Timer? _updateTimer;
+  late final AnimationController _pulseController;
+  late final Animation<double> _pulseAnimation;
+  AppRoute? _assignedRoute;
 
   String _tripStatus = "Starting Trip...";
   String _eta = "-- min";
@@ -35,6 +45,8 @@ class _DriverDashboardScreenState extends State<DriverDashboardScreen> {
   @override
   void initState() {
     super.initState();
+    _pulseController = AnimationController(vsync: this, duration: const Duration(milliseconds: 1200))..repeat();
+    _pulseAnimation = Tween<double>(begin: 0.6, end: 1.6).animate(CurvedAnimation(parent: _pulseController, curve: Curves.easeOut));
     WidgetsBinding.instance.addPostFrameCallback((_) {
       _initializeTrip();
     });
@@ -44,6 +56,7 @@ class _DriverDashboardScreenState extends State<DriverDashboardScreen> {
   void dispose() {
     _positionStream?.cancel();
     _updateTimer?.cancel();
+    _pulseController.dispose();
     super.dispose();
   }
 
@@ -61,6 +74,7 @@ class _DriverDashboardScreenState extends State<DriverDashboardScreen> {
     }
 
     setState(() {
+      _assignedRoute = authState.assignedRoute;
       _destinationName = authState.assignedRoute?.stops.last.name;
       _routeName = authState.assignedRoute?.name;
       _isLoading = false;
@@ -96,6 +110,13 @@ class _DriverDashboardScreenState extends State<DriverDashboardScreen> {
       final position = await geo.Geolocator.getCurrentPosition();
       setState(() => _currentPosition = position);
       _startLocationListener();
+
+      // Fetch route info immediately and then periodically
+      await _fetchRouteAndUpdateInfo();
+      _updateTimer?.cancel();
+      _updateTimer = Timer.periodic(const Duration(seconds: 15), (_) async {
+        await _fetchRouteAndUpdateInfo();
+      });
     } catch (e) {
       setState(() {
         _errorMessage = "Failed to get initial location.";
@@ -111,7 +132,167 @@ class _DriverDashboardScreenState extends State<DriverDashboardScreen> {
 
     _positionStream = geo.Geolocator.getPositionStream(locationSettings: locationSettings).listen((position) {
       setState(() => _currentPosition = position);
+      // Send the new location to the backend so riders can see this bus
+      try {
+        final authService = Provider.of<AuthService>(context, listen: false);
+        final token = authService.currentState.token;
+        final busId = authService.currentState.driverInfo?.busId;
+        if (token != null && busId != null) {
+          BusService.updateLocation(
+            busId: busId.toString(),
+            latitude: position.latitude,
+            longitude: position.longitude,
+            token: token,
+          );
+        }
+      } catch (e) {
+        debugPrint('Failed to post driver location: $e');
+      }
+
+      // Update route info when position changes (distanceFilter reduces frequency)
+      _fetchRouteAndUpdateInfo();
     });
+  }
+
+  Future<void> _updateTripInfoFromRoute(Map<String, dynamic> routeData) async {
+    try {
+      // Safely extract distance and duration (Mapbox may return int or double)
+      final routes = routeData['routes'];
+      if (routes is List && routes.isNotEmpty) {
+        final first = routes.first as Map<String, dynamic>;
+        final num distanceMetersNum = (first['distance'] is num) ? first['distance'] as num : num.parse(first['distance'].toString());
+        final num durationSecondsNum = (first['duration'] is num) ? first['duration'] as num : num.parse(first['duration'].toString());
+
+        final distanceKm = (distanceMetersNum.toDouble() / 1000).toStringAsFixed(2);
+        final etaMinutes = (durationSecondsNum.toDouble() / 60).round();
+
+        setState(() {
+          _distanceRemaining = "$distanceKm km";
+          _eta = "$etaMinutes min";
+        });
+        return;
+      }
+      debugPrint("No routes found in routeData: $routeData");
+    } catch (e) {
+      debugPrint("Error updating trip info: $e");
+    }
+  }
+
+  Future<void> _fetchRouteAndUpdateInfo() async {
+    try {
+      // Simulate fetching route data from Mapbox Directions API
+      final routeData = await _getRouteDataFromMapbox(); // Replace with actual API call
+      await _updateTripInfoFromRoute(routeData);
+    } catch (e) {
+      debugPrint("Error fetching route: $e");
+    }
+  }
+
+  Future<Map<String, dynamic>> _getRouteDataFromMapbox() async {
+    try {
+      if (_currentPosition == null || _assignedRoute == null || _assignedRoute!.stops.isEmpty) {
+        return {'routes': []};
+      }
+
+      final origin = '${_currentPosition!.longitude},${_currentPosition!.latitude}';
+      final destStop = _assignedRoute!.stops.last.location;
+      final dest = '${destStop.longitude},${destStop.latitude}';
+
+      final token = TripService.getMapboxAccessToken();
+      final url = 'https://api.mapbox.com/directions/v5/mapbox/driving-traffic/$origin;$dest?access_token=$token&overview=full&geometries=geojson';
+      final resp = await http.get(Uri.parse(url));
+      if (resp.statusCode == 200) {
+        final data = json.decode(resp.body) as Map<String, dynamic>;
+        return data;
+      } else {
+        debugPrint('Mapbox directions error: ${resp.statusCode} ${resp.body}');
+        return {'routes': []};
+      }
+    } catch (e) {
+      debugPrint('Exception fetching Mapbox directions: $e');
+      return {'routes': []};
+    }
+  }
+  Widget _buildMap() {
+    final String cartoUrl = 'https://{s}.basemaps.cartocdn.com/dark_all/{z}/{x}/{y}{r}.png';
+    // Stadia dark tiles are CORS-friendly and visually similar to CartoDB dark
+    final String stadiaDarkUrl = 'https://tiles.stadiamaps.com/tiles/alidade_smooth_dark/{z}/{x}/{y}{r}.png';
+
+    final String tileUrl = kIsWeb ? stadiaDarkUrl : cartoUrl;
+
+    return FlutterMap(
+      mapController: _mapController,
+      options: MapOptions(
+        center: _currentPosition != null
+            ? fm.LatLng(_currentPosition!.latitude, _currentPosition!.longitude)
+            : const fm.LatLng(34.1216, 35.6489),
+        zoom: 15.0,
+      ),
+      children: [
+        TileLayer(
+          urlTemplate: tileUrl,
+          subdomains: kIsWeb ? const <String>[] : const ['a', 'b', 'c', 'd'],
+          userAgentPackageName: 'com.bosta.app',
+          additionalOptions: kIsWeb
+              ? const <String, String>{}
+              : const <String, String>{
+                  'userAgent': 'com.bosta.app',
+                },
+        ),
+        if (_assignedRoute != null)
+          PolylineLayer(
+            polylines: [
+              Polyline(
+                points: _assignedRoute!.geometry,
+                color: const Color(0xFF2ED8C3),
+                strokeWidth: 5,
+              ),
+            ],
+          ),
+        MarkerLayer(
+          markers: [
+            if (_currentPosition != null)
+              Marker(
+                point: fm.LatLng(_currentPosition!.latitude, _currentPosition!.longitude),
+                width: 80,
+                height: 80,
+                child: AnimatedBuilder(
+                  animation: _pulseAnimation,
+                  builder: (context, child) {
+                    final double scale = _pulseAnimation.value;
+                    return Center(
+                      child: Stack(
+                        alignment: Alignment.center,
+                        children: [
+                          Container(
+                            width: 24 * scale,
+                            height: 24 * scale,
+                            decoration: BoxDecoration(
+                              shape: BoxShape.circle,
+                              color: Colors.blue.withOpacity(0.25 * (2 - scale)),
+                            ),
+                          ),
+                          Container(
+                            width: 14,
+                            height: 14,
+                            decoration: BoxDecoration(
+                              shape: BoxShape.circle,
+                              color: Colors.blue,
+                              boxShadow: [
+                                BoxShadow(color: Colors.blue.withOpacity(0.6), blurRadius: 8, spreadRadius: 1),
+                              ],
+                            ),
+                          ),
+                        ],
+                      ),
+                    );
+                  },
+                ),
+              ),
+          ],
+        ),
+      ],
+    );
   }
 
   @override
@@ -121,6 +302,16 @@ class _DriverDashboardScreenState extends State<DriverDashboardScreen> {
         title: const Text("Driver Dashboard"),
         backgroundColor: const Color(0xFF1F2327),
         foregroundColor: Colors.white,
+        actions: [
+          // Show Stop Trip button when we have a tripId or route assigned
+          if (widget.tripId != null)
+            TextButton.icon(
+              onPressed: _stopTrip,
+              icon: const Icon(Icons.stop, color: Colors.white),
+              label: const Text('Stop Trip', style: TextStyle(color: Colors.white)),
+              style: TextButton.styleFrom(foregroundColor: Colors.white),
+            ),
+        ],
       ),
       backgroundColor: const Color(0xFF12161A),
       body: _isLoading
@@ -144,37 +335,54 @@ class _DriverDashboardScreenState extends State<DriverDashboardScreen> {
     );
   }
 
-  Widget _buildMap() {
-    return FlutterMap(
-      mapController: _mapController,
-      options: MapOptions(
-        center: _currentPosition != null
-            ? fm.LatLng(_currentPosition!.latitude, _currentPosition!.longitude)
-            : const fm.LatLng(34.1216, 35.6489),
-        zoom: 15.0,
+  Future<void> _stopTrip() async {
+    // Confirm with the driver first
+    final should = await showDialog<bool>(
+      context: context,
+      builder: (ctx) => AlertDialog(
+        title: const Text('End Trip'),
+        content: const Text('Are you sure you want to end this trip?'),
+        actions: [
+          TextButton(onPressed: () => Navigator.of(ctx).pop(false), child: const Text('Cancel')),
+          TextButton(onPressed: () => Navigator.of(ctx).pop(true), child: const Text('End Trip')),
+        ],
       ),
-      children: [
-        TileLayer(
-          urlTemplate: "https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png",
-          subdomains: ['a', 'b', 'c'],
-        ),
-        MarkerLayer(
-          markers: [
-            if (_currentPosition != null)
-              Marker(
-                point: fm.LatLng(_currentPosition!.latitude, _currentPosition!.longitude),
-                width: 40,
-                height: 40,
-                child: const Icon(
-                  Icons.location_on,
-                  color: Colors.red,
-                  size: 40,
-                ),
-              ),
-          ],
-        ),
-      ],
     );
+
+    if (should != true) return;
+
+    setState(() => _tripStatus = 'Ending trip...');
+
+    try {
+      final authService = Provider.of<AuthService>(context, listen: false);
+      final token = authService.currentState.token;
+      String? tripId = widget.tripId;
+      if (token == null) throw Exception('Missing auth token');
+
+      // If tripId wasn't passed in, try to discover it from backend/profile
+      if (tripId == null) {
+        tripId = await TS.TripService.checkForActiveTrip(token);
+        if (tripId == null) throw Exception('No active trip found');
+      }
+
+      await TripService.endTrip(token, tripId);
+
+      // Stop updates and listeners
+      _positionStream?.cancel();
+      _updateTimer?.cancel();
+
+      setState(() {
+        _tripStatus = 'Trip ended';
+        _eta = '-- min';
+        _distanceRemaining = '-- km';
+      });
+
+      ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('Trip ended successfully')));
+    } catch (e) {
+      debugPrint('Error ending trip: $e');
+      setState(() => _tripStatus = 'Error ending trip');
+      ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text('Failed to end trip: $e')));
+    }
   }
 
   Widget _buildTripInfoCard() {

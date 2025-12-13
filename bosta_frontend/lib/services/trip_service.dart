@@ -3,6 +3,7 @@ import 'package:bosta_frontend/services/api_endpoints.dart';
 import 'package:flutter/foundation.dart';
 import 'package:http/http.dart' as http;
 import 'auth_service.dart';
+import 'logger.dart';
 
 class TripService {
   // IMPORTANT: For production, this should be loaded from a secure configuration
@@ -39,10 +40,15 @@ class TripService {
     String? startStopId,
     String? endStopId,
   }) async {
-    final requestBody = {
-      // The new endpoint derives the route from the driver's profile,
-      // so we don't need to send stop IDs. It's simpler.
-    };
+    // Include route and stop choices to ensure the backend creates the trip
+    // with the driver's currently-selected route and stops.
+    final requestBody = <String, dynamic>{};
+    final selectedRouteId = authService.currentState.assignedRoute?.id;
+    final selectedStart = authService.currentState.selectedStopId ?? startStopId;
+    final selectedEnd = authService.currentState.selectedEndStopId ?? endStopId;
+    if (selectedRouteId != null) requestBody['route_id'] = selectedRouteId;
+    if (selectedStart != null) requestBody['start_stop_id'] = selectedStart;
+    if (selectedEnd != null) requestBody['end_stop_id'] = selectedEnd;
 
     final token = authService.currentState.token;
     if (token == null) {
@@ -51,7 +57,7 @@ class TripService {
 
     // --- FIX: Use the correct endpoint for creating a trip ---
     // The `create_and_start_trip` endpoint is designed for this exact purpose.
-    debugPrint("[TripService.startNewTrip] Sending request to create new trip via create_and_start_trip endpoint.");
+    Logger.info('TripService', 'createAndStartTrip body=${requestBody}');
     final uri = Uri.parse(ApiEndpoints.createAndStartTrip);
     final response = await http.post(
       uri,
@@ -59,18 +65,18 @@ class TripService {
         'Content-Type': 'application/json',
         'Authorization': 'Bearer $token',
       },
-      body: json.encode(requestBody), // Body can be empty, but we send it for consistency
+      body: json.encode(requestBody),
     );
 
     if (response.statusCode == 201) { // Expect 201 Created
       final responseData = json.decode(response.body);
       final finalTripId = responseData['trip_id']?.toString();
-      debugPrint("[TripService.startNewTrip] Received 201 Created. New trip ID: $finalTripId");
+      Logger.info('TripService', 'created trip_id=$finalTripId');
 
       // --- FIX: After creating the trip, immediately re-fetch the driver's profile. ---
       // This ensures the AuthState is updated with the new active_trip_id before
       // navigating to the dashboard.
-      debugPrint("[TripService.startNewTrip] Refreshing driver profile to get the new active_trip_id...");
+      Logger.debug('TripService', 'refreshing profile to get active_trip_id');
       await authService.fetchAndSetDriverProfile();
 
       // After polling, if the trip ID is still null, then creation has failed.
@@ -162,7 +168,7 @@ class TripService {
       // If any step fails, return null.
       return null;
     } catch (e) {
-      debugPrint("[TripService.fetchEta] Exception: $e");
+      Logger.error('TripService', 'fetchEta exception: $e');
       return null;
     }
   }

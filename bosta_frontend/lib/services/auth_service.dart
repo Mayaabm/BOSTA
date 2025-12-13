@@ -5,6 +5,9 @@ import 'package:bosta_frontend/models/app_route.dart';
 import 'package:http/http.dart' as http;
 import 'package:latlong2/latlong.dart' as fm;
 import 'api_endpoints.dart';
+import 'route_service.dart';
+import 'logger.dart';
+import 'trip_service.dart';
 
 enum UserRole { rider, driver, none }
 
@@ -80,6 +83,10 @@ class AuthState {
 /// In a real app, this would interact with your backend API and secure storage.
 class AuthService extends ChangeNotifier {
   AuthState _state = AuthState(); // Default to logged-out
+  String? _lastPatchDebug;
+
+  /// Detailed debug information about the last call to `patchDriverProfile`.
+  String? get lastPatchDebug => _lastPatchDebug;
 
   AuthState get currentState => _state;
 
@@ -162,16 +169,16 @@ class AuthService extends ChangeNotifier {
   /// Returns null on success, or an error message on failure.
   Future<String?> fetchAndSetDriverProfile({String? token, String? refreshToken, String? selectedStopId, String? selectedEndStopId, String? selectedStartTime, double? selectedStartLat, double? selectedStartLon, String? lastCreatedTripId}) async {
     final stopwatch = Stopwatch()..start();
-    debugPrint("[AuthService] fetchAndSetDriverProfile: Starting...");
+    Logger.info('AuthService', 'fetchAndSetDriverProfile: starting');
 
     final authToken = token ?? _state.token;
     final refresh = refreshToken ?? _state.refreshToken;
     if (authToken == null) {
       return "Authentication token not found. Please log in again.";
     } else {
-      debugPrint("[AuthService] fetchAndSetDriverProfile: Using token starting with '${authToken.substring(0, 8)}...'");
+      Logger.debug('AuthService', 'using token starting ${authToken.substring(0, 8)}...');
     }
-    debugPrint("[AuthService] fetchAndSetDriverProfile: Fetching from URL: ${ApiEndpoints.driverProfile}");
+    Logger.debug('AuthService', 'GET ${ApiEndpoints.driverProfile}');
     final uri = Uri.parse(ApiEndpoints.driverProfile);
     try {
       final response = await http.get( // Added timeout
@@ -182,7 +189,7 @@ class AuthService extends ChangeNotifier {
         },
       );
 
-      debugPrint("[AuthService] fetchAndSetDriverProfile: Profile fetch took ${stopwatch.elapsedMilliseconds}ms. Status: ${response.statusCode}");
+      Logger.debug('AuthService', 'profile fetch took ${stopwatch.elapsedMilliseconds}ms status=${response.statusCode}');
       if (response.statusCode == 200) {
         final data = json.decode(response.body);
         // --- FIX: Log the response but exclude the noisy geometry data ---
@@ -192,7 +199,7 @@ class AuthService extends ChangeNotifier {
           routeForLogging.remove('geometry');
           loggableData['route'] = routeForLogging;
         }
-        debugPrint("[AuthService] fetchAndSetDriverProfile: Received 200 OK. Parsed data (geometry excluded): $loggableData");
+        Logger.debug('AuthService', 'profile received; route present: ${data['route'] != null}, active_trip_id: ${data['active_trip_id'] ?? 'null'}');
 
         final busId = data['bus'] != null ? (data['bus']['id']?.toString() ?? '') : '';
         final routeId = data['route'] != null ? (data['route']['id']?.toString() ?? '') : '';
@@ -205,7 +212,7 @@ class AuthService extends ChangeNotifier {
         final busPlateNumber = data['bus'] != null ? (data['bus']['plate_number'] ?? '') : '';
         final busCapacity = data['bus'] != null ? (data['bus']['capacity'] as int?) : null;
         final email = data['bus'] != null ? (data['bus']['driver_email'] ?? '') : '';
-        debugPrint("[AuthService] fetchAndSetDriverProfile: Parsed driver info - busId: $busId, routeId: $routeId, name: $driverName");
+        Logger.info('AuthService', 'parsed driver info: busId=$busId routeId=$routeId name=$driverName');
 
         final info = DriverInfo(
           busId: busId,
@@ -228,15 +235,21 @@ class AuthService extends ChangeNotifier {
         // We can parse it directly instead of making a second API call.
         if (data['route'] != null) {
           fetchedRoute = AppRoute.fromJson(data['route']);
-          debugPrint("[AuthService] fetchAndSetDriverProfile: Successfully parsed embedded route '${fetchedRoute.name}'.");
+          Logger.info('AuthService', "parsed embedded route: ${fetchedRoute.name}");
         } else if (routeId.isNotEmpty) {
-          debugPrint("[AuthService] fetchAndSetDriverProfile: Route ID $routeId found, but route object is missing from response.");
+          Logger.debug('AuthService', 'route id present but route object missing; attempting fetch by id');
+          try {
+            fetchedRoute = await RouteService.getRouteById(routeId);
+            Logger.info('AuthService', 'fetched route by id: ${fetchedRoute?.name}');
+          } catch (e) {
+            Logger.error('AuthService', 'failed to fetch route by id $routeId: $e');
+          }
         }
         
         // Find the initial bus position from the fetched route and selected stop ID
         fm.LatLng? initialPosition; // The 'selectedStopId' here refers to the parameter passed to the function
         final startStopId = selectedStopId ?? _state.selectedStopId;
-        debugPrint("[AuthService] fetchAndSetDriverProfile: Determining initial position. startStopId: $startStopId");
+        Logger.debug('AuthService', 'determining initial position startStopId=$startStopId');
         if (fetchedRoute != null && startStopId != null) {
           final startStop = fetchedRoute.stops.firstWhere((stop) => stop.id == startStopId, orElse: () => fetchedRoute!.stops.first);
           // If a specific start lat/lon was provided from onboarding, use that. Otherwise, use the stop's location.
@@ -244,12 +257,12 @@ class AuthService extends ChangeNotifier {
           final lat = selectedStartLat ?? startStop.location.latitude;
           final lon = selectedStartLon ?? startStop.location.longitude;
           initialPosition = fm.LatLng(lat, lon);
-          debugPrint("[AuthService] fetchAndSetDriverProfile: Initial position set from start stop '${startStop.id}': $initialPosition");
+          Logger.debug('AuthService', 'initial position from start stop ${startStop.id}: $initialPosition');
         } else if (fetchedRoute != null && fetchedRoute.geometry.isNotEmpty) {
           initialPosition = fetchedRoute.geometry.first;
-          debugPrint("[AuthService] fetchAndSetDriverProfile: Initial position set from first point of route geometry: $initialPosition");
+          Logger.debug('AuthService', 'initial position from route geometry: $initialPosition');
         } else {
-          debugPrint("[AuthService] fetchAndSetDriverProfile: Could not determine initial position.");
+          Logger.debug('AuthService', 'could not determine initial position');
         }
 
         debugPrint("[AuthService] Storing final state with:");
@@ -261,7 +274,7 @@ class AuthService extends ChangeNotifier {
         // Store the raw response JSON so callers can access top-level fields
         // that aren't yet represented in AuthState (e.g., active_trip_id).
         final rawProfile = data is Map<String, dynamic> ? data : null;
-        debugPrint("[AuthService] >> active_trip_id from raw profile GET response: ${rawProfile?['active_trip_id']}");
+        Logger.info('AuthService', 'active_trip_id=${rawProfile?['active_trip_id']}');
         
         _state = AuthState(
           isAuthenticated: true,
@@ -294,18 +307,18 @@ class AuthService extends ChangeNotifier {
           rawDriverProfile: rawProfile,
         );
         notifyListeners();
-        debugPrint("[AuthService] fetchAndSetDriverProfile: Success. Total time: ${stopwatch.elapsedMilliseconds}ms.");
+        Logger.debug('AuthService', 'fetchAndSetDriverProfile success ${stopwatch.elapsedMilliseconds}ms');
         return null; // Success
       }
       // Provide a more detailed error message for debugging
-      debugPrint("[AuthService] fetchAndSetDriverProfile: Error. Status: ${response.statusCode}. Total time: ${stopwatch.elapsedMilliseconds}ms.");
+      Logger.error('AuthService', 'fetch failed status=${response.statusCode} time=${stopwatch.elapsedMilliseconds}ms');
       final errorBody = response.body.isNotEmpty ? json.decode(response.body) : {};
-      final errorMessage = errorBody['error'] ?? 'No specific error message provided.';
-      return "Failed to load driver profile. Status: ${response.statusCode}. Reason: $errorMessage";
+      final errorMessage = errorBody['error'] ?? response.body;
+      return "Failed to load driver profile. Status: ${response.statusCode}.";
     } catch (e) {
       // Catch network or parsing errors
-      debugPrint("[AuthService] fetchAndSetDriverProfile: Exception caught. Total time: ${stopwatch.elapsedMilliseconds}ms. Error: $e");
-      return "An error occurred while fetching the driver profile: $e";
+      Logger.error('AuthService', 'exception during fetchAndSetDriverProfile: $e');
+      return "An error occurred while fetching the driver profile.";
     }
   }
 
@@ -325,43 +338,65 @@ class AuthService extends ChangeNotifier {
     // The backend uses the same 'onboard' endpoint for both initial setup and updates.
     // It expects a POST request, not a PATCH or PUT on /driver/me/.
     final uri = Uri.parse(ApiEndpoints.driverOnboard);
-    debugPrint("======================================================================");
-    debugPrint("[AuthService.patchDriverProfile] Initiating profile patch.");
-    debugPrint("  > Endpoint: $uri");
-    debugPrint("[AuthService] patchDriverProfile: Sending POST to $uri with data: ${json.encode(data)}");
+    Logger.info('AuthService', 'patchDriverProfile: POST to $uri');
+    Logger.debug('AuthService', 'patch payload: ${json.encode(data)}');
     try {
       // Use http.post to match the backend's expectation for this endpoint.
+      final requestBody = json.encode(data);
       final response = await http.post(
         uri,
         headers: {
           'Content-Type': 'application/json',
           'Authorization': 'Bearer $accessToken',
         },
-        body: json.encode(data),
+        body: requestBody,
       );
 
-      debugPrint("[AuthService] patchDriverProfile: Response status: ${response.statusCode}, body: ${response.body}");
-      debugPrint("  > Raw Response Body: ${response.body}");
-      debugPrint("======================================================================");
+      // Build verbose debug info for later inspection
+      final buffer = StringBuffer();
+      buffer.writeln('=== AuthService.patchDriverProfile DEBUG ===');
+      buffer.writeln('Endpoint: $uri');
+      buffer.writeln('Request: $requestBody');
+      buffer.writeln('Status: ${response.statusCode}');
+      buffer.writeln('Raw response body: ${response.body}');
+      // Try to parse JSON if possible
+      try {
+        final parsed = json.decode(response.body);
+        buffer.writeln('Parsed response JSON: $parsed');
+      } catch (_) {
+        buffer.writeln('Response is not JSON.');
+      }
+
+      _lastPatchDebug = buffer.toString();
+      Logger.debug('AuthService', 'patch response status=${response.statusCode}');
 
       if (response.statusCode == 200) {
-        debugPrint("[AuthService] patchDriverProfile: POST successful. Now re-fetching the full profile to get the latest state...");
+        Logger.info('AuthService', 'patchDriverProfile: POST successful. Refreshing profile...');
         final fetchError = await fetchAndSetDriverProfile();
         if (fetchError != null) {
-          debugPrint("[AuthService] patchDriverProfile: Error re-fetching profile after patch: $fetchError");
+          Logger.error('AuthService', 'error re-fetching profile after patch: $fetchError');
+          _lastPatchDebug = (_lastPatchDebug ?? '') + '\nFetch error: $fetchError';
         }
-        return null; // Success
+        return fetchError; // null on complete success, otherwise the fetch error
       } else {
-        // Provide a more detailed error message for debugging
-        debugPrint("[AuthService] patchDriverProfile: Error. Status: ${response.statusCode}.");
-        final errorBody = response.body.isNotEmpty ? json.decode(response.body) : {};
-        final errorMessage = errorBody['error'] ?? 'No specific error message provided.';
+        Logger.error('AuthService', 'patchDriverProfile failed status=${response.statusCode}');
+        String errorMessage = 'No specific error message provided.';
+        try {
+          final errorBody = response.body.isNotEmpty ? json.decode(response.body) : {};
+          if (errorBody is Map && errorBody.containsKey('error')) {
+            errorMessage = errorBody['error'].toString();
+          } else if (errorBody is Map) {
+            errorMessage = errorBody.toString();
+          }
+        } catch (_) {}
+        _lastPatchDebug = (_lastPatchDebug ?? '') + '\nErrorMessage: $errorMessage';
         return "Failed to update driver profile. Status: ${response.statusCode}. Reason: $errorMessage";
       }
     } catch (e) {
-      // Catch network or parsing errors
-      debugPrint("[AuthService] patchDriverProfile: Exception caught. Total time: ${stopwatch.elapsedMilliseconds}ms. Error: $e");
-      return "An error occurred while updating the driver profile: $e";
+      final msg = "An error occurred while updating the driver profile.";
+      Logger.error('AuthService', 'patchDriverProfile exception: $e');
+      _lastPatchDebug = (_lastPatchDebug ?? '') + '\nException: $e';
+      return msg;
     }
   }
   
@@ -420,6 +455,35 @@ class AuthService extends ChangeNotifier {
     } catch (e) {
       return "An error occurred while saving trip setup: $e";
     }
+  }
+
+  /// Optimistically set the assigned route locally so the UI reflects
+  /// the driver's choice immediately while the backend update is pending.
+  void setAssignedRouteLocally(AppRoute route) {
+    final newRaw = Map<String, dynamic>.from(_state.rawDriverProfile ?? {});
+    // Minimal route representation for checks elsewhere
+    newRaw['route'] = {'id': route.id, 'name': route.name};
+
+    _state = AuthState(
+      isAuthenticated: _state.isAuthenticated,
+      role: _state.role,
+      driverInfo: _state.driverInfo,
+      assignedRoute: route,
+      token: _state.token,
+      refreshToken: _state.refreshToken,
+      selectedStopId: _state.selectedStopId,
+      selectedEndStopId: _state.selectedEndStopId,
+      selectedStartTime: _state.selectedStartTime,
+      selectedStartLat: _state.selectedStartLat,
+      selectedStartLon: _state.selectedStartLon,
+      initialBusPosition: _state.initialBusPosition,
+      phoneNumber: _state.phoneNumber,
+      busPlateNumber: _state.busPlateNumber,
+      busCapacity: _state.busCapacity,
+      lastCreatedTripId: _state.lastCreatedTripId,
+      rawDriverProfile: newRaw,
+    );
+    notifyListeners();
   }
 
   /// Registers a new user and logs them in.
@@ -699,10 +763,27 @@ class AuthService extends ChangeNotifier {
   /// This lets UI code access top-level fields such as `active_trip_id`.
   Map<String, dynamic>? get rawDriverProfile => _state.rawDriverProfile;
 
-  Future<void> logout() async {
+  /// Attempts to end any active trip before clearing auth state.
+  /// Returns null on success, or an error message if ending the trip failed.
+  Future<String?> logout() async {
+    debugPrint("[AuthService] logout: Attempting safe logout.");
+    final token = _state.token;
+    final activeTripId = _state.rawDriverProfile?['active_trip_id']?.toString();
+    if (token != null && activeTripId != null) {
+      try {
+        Logger.info('AuthService', 'logout: Ending active trip $activeTripId before logout');
+        await TripService.endTrip(token, activeTripId);
+        Logger.info('AuthService', 'logout: Ended active trip $activeTripId');
+      } catch (e) {
+        Logger.error('AuthService', 'logout: Failed to end active trip $activeTripId: $e');
+        return 'Failed to end active trip: $e';
+      }
+    }
+
     debugPrint("[AuthService] logout: Clearing auth state and logging out.");
     _state = AuthState();
     notifyListeners();
+    return null;
   }
 
   /// Fetches all available routes from the backend.
