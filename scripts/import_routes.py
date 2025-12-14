@@ -49,17 +49,68 @@ for filename in all_files:
                 geom_json = {"type": geom.geom_type, "coordinates": coords_2d}
                 geom = GEOSGeometry(json.dumps(geom_json))
 
-            route_name = props.get("ref") or props.get("name")
+            # Prefer explicit dataset route name (many files use 'route_name')
+            route_name = props.get("route_name") or props.get("ref") or props.get("name")
             if not route_name:
                 route_counter += 1
                 route_name = f"{os.path.splitext(filename)[0]}_{route_counter}"
 
             route_desc = props.get("description") or ""
-            route, _ = Route.objects.update_or_create(
-                name=route_name,
-                defaults={"description": route_desc, "geometry": geom}
-            )
-            print(f"   ✅ Route saved: {route.name}")
+            # Try to find an existing route by (approximate) geometry match so we update its name
+            route = None
+            try:
+                # First try exact geometry equality
+                route = Route.objects.filter(geometry__equals=geom).first()
+            except Exception:
+                route = None
+
+            if not route:
+                # Fallback: find the closest existing route by distance
+                closest = None
+                min_dist = float('inf')
+                for r in Route.objects.all():
+                    try:
+                        d = r.geometry.distance(geom)
+                    except Exception:
+                        d = float('inf')
+                    if d < min_dist:
+                        min_dist = d
+                        closest = r
+                # distance is in degrees; use a small threshold (about ~50 meters ~0.0005 degrees)
+                if closest is not None and min_dist < 0.0005:
+                    route = closest
+
+            if route:
+                # Ensure uniqueness: if desired name exists on another route, append suffix
+                conflict = Route.objects.filter(name=route_name).exclude(pk=route.pk).exists()
+                final_name = route_name if not conflict else f"{route_name}_{route.pk}"
+                route.name = final_name
+                route.description = route_desc
+                route.geometry = geom
+                # copy common metadata from properties if present
+                route.operator = props.get("operator") or route.operator
+                route.price = props.get("price") or route.price
+                route.vehicle_type = props.get("vehicule_type") or route.vehicle_type
+                route.save()
+                print(f"   🔁 Updated existing route: {route.name}")
+            else:
+                # Create new route record
+                final_name = route_name
+                if Route.objects.filter(name=final_name).exists():
+                    # ensure uniqueness
+                    suffix = 1
+                    while Route.objects.filter(name=f"{final_name}_{suffix}").exists():
+                        suffix += 1
+                    final_name = f"{final_name}_{suffix}"
+                route = Route.objects.create(
+                    name=final_name,
+                    description=route_desc,
+                    geometry=geom,
+                    operator=props.get("operator"),
+                    price=props.get("price"),
+                    vehicle_type=props.get("vehicule_type"),
+                )
+                print(f"   ✅ Created route: {route.name}")
 
 print("\n--- PASS 2: Processing all stops (Points) ---")
 for filename in all_files:

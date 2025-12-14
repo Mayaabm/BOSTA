@@ -50,6 +50,8 @@ INSTALLED_APPS = [
     'rest_framework_simplejwt',
     'corsheaders',
     'django.contrib.gis',  
+    'django_extensions',
+
 ]
 AUTH_USER_MODEL = 'auth.User'
 

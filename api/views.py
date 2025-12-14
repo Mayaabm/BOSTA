@@ -140,7 +140,7 @@ def buses_nearby(request):
     Returns a list of buses near the given latitude and longitude that are on active trips.
     Only shows drivers that are currently logged in and have an active trip (STATUS_STARTED).
     """
-    # --- Start of new logging ---
+    
     token_mask = _masked_token_from_request(request)
     logger.info("\n--- BUSES NEARBY DEBUG ---")
     try:
@@ -151,14 +151,12 @@ def buses_nearby(request):
 
         user_location = Point(lon, lat, srid=4326)
 
-        # Step 1: Get all buses that have a location and a recent update.
         recently_updated_buses = Bus.objects.filter(
             current_location__isnull=False,
             last_reported_at__gte=timezone.now() - timedelta(hours=2)
         )
         logger.info(f"[buses_nearby] Found {recently_updated_buses.count()} buses with a recent location.")
 
-        # Step 2: From those, find the ones associated with a 'STARTED' trip.
         buses_with_started_trip = recently_updated_buses.filter(
             trips__status=Trip.STATUS_STARTED
         ).distinct()
