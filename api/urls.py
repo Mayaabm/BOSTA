@@ -26,6 +26,8 @@ urlpatterns = [
     path('register/', views.register_user, name='register_user'),
     path('plan_trip/', views.plan_trip, name='plan_trip'),
     path('stops/', views.stop_list, name='stop_list'),
+    path('stops/nearest/', views.nearest_stop_geojson, name='nearest_stop_geojson'),
+    path('stops/nearest_for_destination/', views.nearest_stops_for_destination, name='nearest_stops_for_destination'),
 ]
 
 print("--- Finished loading api/urls.py ---")

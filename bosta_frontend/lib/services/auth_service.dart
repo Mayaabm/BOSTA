@@ -276,11 +276,16 @@ class AuthService extends ChangeNotifier {
         final rawProfile = data is Map<String, dynamic> ? data : null;
         Logger.info('AuthService', 'active_trip_id=${rawProfile?['active_trip_id']}');
         
+        // If the backend response doesn't contain full route details yet,
+        // preserve any previously-known (optimistic) assigned route so the
+        // UI doesn't revert to an older route while the server catches up.
+        final AppRoute? finalAssignedRoute = fetchedRoute ?? _state.assignedRoute;
+
         _state = AuthState(
           isAuthenticated: true,
           role: UserRole.driver,
           driverInfo: info,
-          assignedRoute: fetchedRoute, // Store the fetched route
+          assignedRoute: finalAssignedRoute, // Store fetched or existing route
           token: authToken, // Use the token that was used for the fetch
           refreshToken: refresh,
           // --- FIX: Prioritize passed-in parameters over the backend response for trip details.

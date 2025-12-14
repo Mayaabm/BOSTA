@@ -261,6 +261,29 @@ class _DriverHomeScreenState extends State<DriverHomeScreen> {
 
     setState(() => _isSavingTripSetup = true);
     final authService = Provider.of<AuthService>(context, listen: false);
+    // Log the chosen start/end stop IDs and their coordinates (if available)
+    try {
+      final assigned = authService.currentState.assignedRoute;
+      String startCoords = 'unknown';
+      String endCoords = 'unknown';
+      String startName = '';
+      String endName = '';
+      if (assigned != null) {
+        try {
+          final s = assigned.stops.firstWhere((st) => st.id == _selectedStartStopId);
+          startCoords = '${s.location.latitude},${s.location.longitude}';
+          startName = s.name;
+        } catch (_) {}
+        try {
+          final e = assigned.stops.firstWhere((st) => st.id == _selectedEndStopId);
+          endCoords = '${e.location.latitude},${e.location.longitude}';
+          endName = e.name;
+        } catch (_) {}
+      }
+      Logger.info('DriverHomeScreen', 'Saving trip setup -> start=$_selectedStartStopId ($startName) coords=$startCoords ; end=$_selectedEndStopId ($endName) coords=$endCoords');
+    } catch (e) {
+      Logger.error('DriverHomeScreen', 'Failed to log trip setup details: $e');
+    }
     // Use the new, dedicated method for saving trip setup
     final error = await authService.saveTripSetup(
         startStopId: _selectedStartStopId!, endStopId: _selectedEndStopId!);
@@ -270,6 +293,34 @@ class _DriverHomeScreenState extends State<DriverHomeScreen> {
         _isSavingTripSetup = false;
         _errorMessage = error != null ? "Failed to save trip setup: $error" : null;
       });
+    }
+
+    // Log result
+    if (error == null) {
+      try {
+        final assigned = authService.currentState.assignedRoute;
+        String startCoords = 'unknown';
+        String endCoords = 'unknown';
+        String startName = '';
+        String endName = '';
+        if (assigned != null) {
+          try {
+            final s = assigned.stops.firstWhere((st) => st.id == _selectedStartStopId);
+            startCoords = '${s.location.latitude},${s.location.longitude}';
+            startName = s.name;
+          } catch (_) {}
+          try {
+            final e = assigned.stops.firstWhere((st) => st.id == _selectedEndStopId);
+            endCoords = '${e.location.latitude},${e.location.longitude}';
+            endName = e.name;
+          } catch (_) {}
+        }
+        Logger.info('DriverHomeScreen', 'Trip setup saved -> start=$_selectedStartStopId ($startName) coords=$startCoords ; end=$_selectedEndStopId ($endName) coords=$endCoords');
+      } catch (e) {
+        Logger.error('DriverHomeScreen', 'Failed to log saved trip setup details: $e');
+      }
+    } else {
+      Logger.error('DriverHomeScreen', 'saveTripSetup returned error: $error');
     }
   }
 

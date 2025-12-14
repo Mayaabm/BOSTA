@@ -68,6 +68,10 @@ class _RiderHomeScreenState extends State<RiderHomeScreen> with TickerProviderSt
 
   // Search controllers
   Animation<LatLng>? _markerAnimation;
+  // When a place is snapped to a stop by the backend, show it on the map
+  LatLng? _snappedStopLocation;
+  String? _snappedStopName;
+  String? _snappedStopId;
 
   @override
   void initState() {
@@ -424,38 +428,123 @@ class _RiderHomeScreenState extends State<RiderHomeScreen> with TickerProviderSt
   /// Handles the selection of a destination stop from the search bar.
   Future<void> _onDestinationSelected(DestinationResult result) async {
     debugPrint("Destination selected: ${result.name} at (${result.latitude}, ${result.longitude})");
-
-    // Switch the view to "Plan Trip" to show the suggestions.
-    _onViewChanged(RiderView.planTrip);
-
-    // Call the service to find trip suggestions to the selected destination.
-    await _findBusesTo(LatLng(result.latitude, result.longitude));
-
-    // Also call the backend plan_trip API to compute ETA and transfer info for this stop.
-    try {
-      if (result.stopId != null && result.stopId!.isNotEmpty) {
-        final plan = await BusService.planTripToStop(
-          destinationStopId: result.stopId!,
-          latitude: _currentPosition?.latitude ?? result.latitude,
-          longitude: _currentPosition?.longitude ?? result.longitude,
-        );
-        if (plan != null && plan['eta_minutes'] != null) {
-          final eta = plan['eta_minutes'];
-          ScaffoldMessenger.of(context).showSnackBar(
-            SnackBar(content: Text('Estimated arrival: ${eta} minutes')),
-          );
-        }
+    // If backend provided snapped destination info, display a marker on the map.
+    final snapped = result.snappedData ?? {};
+    final snappedDest = snapped['snapped_destination'];
+    if (snappedDest != null && snappedDest['geometry'] != null) {
+      try {
+        final coords = snappedDest['geometry']['coordinates'];
+        final lon = (coords[0] as num).toDouble();
+        final lat = (coords[1] as num).toDouble();
+        setState(() {
+          _snappedStopLocation = LatLng(lat, lon);
+          _snappedStopName = (snappedDest['properties'] != null ? (snappedDest['properties']['name'] ?? snappedDest['properties']['stop_name']) : null) ?? result.name;
+          _snappedStopId = snappedDest['properties'] != null ? (snappedDest['properties']['stop_id']?.toString()) : null;
+        });
+        // Move map to the snapped stop for visibility
+        mapController.move(LatLng(lat, lon), 15.0);
+      } catch (e) {
+        debugPrint('Failed to parse snapped destination geometry: $e');
       }
-    } catch (e) {
-      debugPrint('planTripToStop failed: $e');
     }
 
-    // If suggestions were found, show them.
-    if (_tripSuggestions.isNotEmpty) {
-      _panelController.open();
-    }
-    // Open the panel to show the results.
-    _panelController.open();
+    // Show a compact bottom sheet confirming the snapped destination and offering Plan Trip
+    showModalBottomSheet(
+      context: context,
+      backgroundColor: Colors.transparent,
+      isScrollControlled: false,
+      builder: (ctx) {
+        final snappedProps = snapped['snapped_destination'] != null ? (snapped['snapped_destination']['properties'] ?? {}) : {};
+        final destNearest = (snapped['destination_nearest_stops'] is List) ? (snapped['destination_nearest_stops'] as List) : [];
+
+        return Container(
+          padding: const EdgeInsets.all(16),
+          decoration: const BoxDecoration(
+            color: Color(0xFF1F2327),
+            borderRadius: BorderRadius.vertical(top: Radius.circular(16)),
+          ),
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              Text(result.name, style: const TextStyle(color: Colors.white, fontSize: 18, fontWeight: FontWeight.bold)),
+              const SizedBox(height: 6),
+              if (snappedProps.isNotEmpty)
+                Text(snappedProps['name'] ?? snappedProps['stop_name'] ?? '', style: const TextStyle(color: Colors.white70)),
+              if (destNearest.isNotEmpty) ...[
+                const SizedBox(height: 8),
+                Text('Nearest stop: ${destNearest[0]['name'] ?? 'Unknown'} • ${destNearest[0]['distance_m']?.toStringAsFixed(0) ?? ''} m', style: const TextStyle(color: Colors.white70)),
+              ],
+              const SizedBox(height: 12),
+              Row(
+                children: [
+                  Expanded(
+                    child: ElevatedButton(
+                      onPressed: () async {
+                        Navigator.of(ctx).pop();
+                        // Proceed with planning the trip
+                        _onViewChanged(RiderView.planTrip);
+                        await _findBusesTo(LatLng(result.latitude, result.longitude));
+
+                        // Call backend plan_trip if we have a snapped stop id
+                        try {
+                          if (result.stopId != null && result.stopId!.isNotEmpty) {
+                            final plan = await BusService.planTripToStop(
+                              destinationStopId: result.stopId!,
+                              latitude: _currentPosition?.latitude ?? result.latitude,
+                              longitude: _currentPosition?.longitude ?? result.longitude,
+                            );
+                            if (plan != null && plan['eta_minutes'] != null) {
+                              final eta = plan['eta_minutes'];
+                              if (mounted) ScaffoldMessenger.of(context).showSnackBar(
+                                SnackBar(content: Text('Estimated arrival: ${eta} minutes')),
+                              );
+                            }
+                          }
+                        } catch (e) {
+                          debugPrint('planTripToStop failed: $e');
+                        }
+
+                        if (mounted) {
+                          if (_tripSuggestions.isNotEmpty) {
+                            _panelController.open();
+                          } else {
+                            _panelController.open();
+                          }
+                        }
+                      },
+                      style: ElevatedButton.styleFrom(backgroundColor: const Color(0xFF2ED8C3)),
+                      child: const Padding(
+                        padding: EdgeInsets.symmetric(vertical: 12),
+                        child: Text('Plan trip', style: TextStyle(color: Colors.black)),
+                      ),
+                    ),
+                  ),
+                  const SizedBox(width: 8),
+                  OutlinedButton(
+                    onPressed: () {
+                      // Clear the snapped marker if the user cancels
+                      setState(() {
+                        _snappedStopLocation = null;
+                        _snappedStopName = null;
+                        _snappedStopId = null;
+                      });
+                      Navigator.of(ctx).pop();
+                    },
+                    style: OutlinedButton.styleFrom(side: const BorderSide(color: Colors.white24)),
+                    child: const Padding(
+                      padding: EdgeInsets.symmetric(vertical: 12, horizontal: 8),
+                      child: Text('Cancel', style: TextStyle(color: Colors.white70)),
+                    ),
+                  ),
+                ],
+              ),
+              const SizedBox(height: 8),
+            ],
+          ),
+        );
+      },
+    );
   }
 
   /// Fetches and displays only the buses for a specific route.
@@ -529,6 +618,28 @@ class _RiderHomeScreenState extends State<RiderHomeScreen> with TickerProviderSt
                     builder: (context, _) {
                       return MarkerLayer(markers: [
                         if (_currentPosition != null) _buildUserLocationMarker(),
+                        if (_snappedStopLocation != null)
+                          Marker(
+                            point: _snappedStopLocation!,
+                            width: 36,
+                            height: 36,
+                            child: Column(
+                              mainAxisSize: MainAxisSize.min,
+                              children: [
+                                Container(
+                                  padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 4),
+                                  decoration: BoxDecoration(color: const Color(0xFF1F2327), borderRadius: BorderRadius.circular(6)),
+                                  child: Text(_snappedStopName ?? 'Stop', style: GoogleFonts.urbanist(color: Colors.white, fontSize: 12)),
+                                ),
+                                const SizedBox(height: 4),
+                                Container(
+                                  width: 20,
+                                  height: 20,
+                                  decoration: BoxDecoration(shape: BoxShape.circle, color: Colors.orange, border: Border.all(color: Colors.white, width: 2)),
+                                ),
+                              ],
+                            ),
+                          ),
                         _buildSelectedBusMarker(animatedPosition: _markerAnimation!.value),
                       ]);
                     },
@@ -537,6 +648,28 @@ class _RiderHomeScreenState extends State<RiderHomeScreen> with TickerProviderSt
                   MarkerLayer(markers: [
                       if (_selectedBus == null) ..._buildAllBusMarkers(),
                       if (_currentPosition != null) _buildUserLocationMarker(),
+                      if (_snappedStopLocation != null)
+                        Marker(
+                          point: _snappedStopLocation!,
+                          width: 36,
+                          height: 36,
+                          child: Column(
+                            mainAxisSize: MainAxisSize.min,
+                            children: [
+                              Container(
+                                padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 4),
+                                decoration: BoxDecoration(color: const Color(0xFF1F2327), borderRadius: BorderRadius.circular(6)),
+                                child: Text(_snappedStopName ?? 'Stop', style: GoogleFonts.urbanist(color: Colors.white, fontSize: 12)),
+                              ),
+                              const SizedBox(height: 4),
+                              Container(
+                                width: 20,
+                                height: 20,
+                                decoration: BoxDecoration(shape: BoxShape.circle, color: Colors.orange, border: Border.all(color: Colors.white, width: 2)),
+                              ),
+                            ],
+                          ),
+                        ),
                       if (_selectedBus != null) _buildSelectedBusMarker(),
                     ]),
               ],

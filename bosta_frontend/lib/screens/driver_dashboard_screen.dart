@@ -178,7 +178,10 @@ class _DriverDashboardScreenState extends State<DriverDashboardScreen> with Sing
         // is running and skip sending device GPS updates.
         final bool hasActiveTrip = authService.rawDriverProfile?['active_trip_id'] != null;
 
-        if (!hasActiveTrip && token != null && busId != null) {
+        // Avoid sending device GPS updates if a server/simulator location
+        // is available (stored in `_busLocation`). This prevents the device
+        // from overwriting simulator updates when a simulated trip is running.
+        if (!hasActiveTrip && token != null && busId != null && _busLocation == null) {
           BusService.updateLocation(
             busId: busId.toString(),
             latitude: position.latitude,
@@ -264,6 +267,11 @@ class _DriverDashboardScreenState extends State<DriverDashboardScreen> with Sing
 
     final String tileUrl = kIsWeb ? stadiaDarkUrl : cartoUrl;
 
+    final authService = Provider.of<AuthService>(context);
+    // Prefer the freshest assigned route from AuthService, but fall back to
+    // the locally cached _assignedRoute set during initialization.
+    final assignedRoute = authService.currentState.assignedRoute ?? _assignedRoute;
+
     return FlutterMap(
       mapController: _mapController,
       options: MapOptions(
@@ -283,7 +291,7 @@ class _DriverDashboardScreenState extends State<DriverDashboardScreen> with Sing
                   'userAgent': 'com.bosta.app',
                 },
         ),
-        if (_assignedRoute != null)
+        if (assignedRoute != null)
           PolylineLayer(
             // Draw a soft halo under the main line to reduce blocky appearance,
             // then a thinner semi-transparent main line so it blends with the map.
@@ -294,7 +302,7 @@ class _DriverDashboardScreenState extends State<DriverDashboardScreen> with Sing
                 strokeWidth: 8.0,
               ),
               Polyline(
-                points: _assignedRoute!.geometry,
+                points: assignedRoute!.geometry,
                 color: Color(0xFF2ED8C3).withOpacity(0.85),
                 strokeWidth: 4.0,
               ),
@@ -303,29 +311,31 @@ class _DriverDashboardScreenState extends State<DriverDashboardScreen> with Sing
         // Show route start/end using the driver's selected start/end stops
         // (fall back to first/last stops if no selection). Use slightly
         // larger icon-style markers so they are clearer across devices.
-        if (_assignedRoute != null && _assignedRoute!.stops.isNotEmpty)
+        if (assignedRoute != null && assignedRoute!.stops.isNotEmpty)
           Builder(builder: (context) {
-            final authService = Provider.of<AuthService>(context, listen: false);
-            final selectedStartId = authService.currentState.selectedStopId;
-            final selectedEndId = authService.currentState.selectedEndStopId;
+            // Explicitly listen here so marker positions update when the
+            // AuthService selected start/end stop IDs change.
+            final innerAuth = Provider.of<AuthService>(context);
+            final selectedStartId = innerAuth.currentState.selectedStopId;
+            final selectedEndId = innerAuth.currentState.selectedEndStopId;
 
             // Helper to find a stop by id or fallback to first/last
             dynamic findStart() {
               if (selectedStartId != null) {
                 try {
-                  return _assignedRoute!.stops.firstWhere((s) => s.id == selectedStartId);
+                  return assignedRoute!.stops.firstWhere((s) => s.id == selectedStartId);
                 } catch (_) {}
               }
-              return _assignedRoute!.stops.first;
+              return assignedRoute!.stops.first;
             }
 
             dynamic findEnd() {
               if (selectedEndId != null) {
                 try {
-                  return _assignedRoute!.stops.firstWhere((s) => s.id == selectedEndId);
+                  return assignedRoute!.stops.firstWhere((s) => s.id == selectedEndId);
                 } catch (_) {}
               }
-              return _assignedRoute!.stops.last;
+              return assignedRoute!.stops.last;
             }
 
             final startStop = findStart();

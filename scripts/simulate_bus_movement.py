@@ -136,16 +136,75 @@ def run_simulation(points: List[Tuple[float, float]], bus_id: str, base_url: str
         current_seg = start_point_index if start_point_index < len(points) - 1 else len(points) - 2
         traveled_in_seg = 0.0
     elif start_latlon is not None:
-        best_idx, best_dist = 0, float('inf')
-        for idx, p in enumerate(points):
-            d = haversine_m(p, start_latlon)
-            if d < best_dist:
-                best_dist = d
-                best_idx = idx
-        current_seg = best_idx if best_idx < len(points) - 1 else len(points) - 2
-        traveled_in_seg = 0.0
+        # Find the closest projection of start_latlon onto the polyline (not just nearest vertex)
+        best_seg = 0
+        best_frac = 0.0
+        best_dist = float('inf')
+        # Pre-calc segment lengths if not already done
+        if not seg_lengths:
+            seg_lengths = segment_distances(points)
+        # helper to find projection onto polyline and return (seg, frac, proj_dist_m, proj_traveled_m, proj_point)
+        def _project_point_to_poly(latlon):
+            b_seg = 0
+            b_frac = 0.0
+            b_dist = float('inf')
+            b_proj = points[0]
+            for i in range(len(points) - 1):
+                a = points[i]
+                b = points[i + 1]
+                dx = b[0] - a[0]
+                dy = b[1] - a[1]
+                if dx == 0 and dy == 0:
+                    frac = 0.0
+                else:
+                    apx = latlon[0] - a[0]
+                    apy = latlon[1] - a[1]
+                    denom = dx * dx + dy * dy
+                    frac = (apx * dx + apy * dy) / denom
+                    if frac < 0.0:
+                        frac = 0.0
+                    elif frac > 1.0:
+                        frac = 1.0
+
+                proj = interp(a, b, frac)
+                d = haversine_m(proj, latlon)
+                if d < b_dist:
+                    b_dist = d
+                    b_seg = i
+                    b_frac = frac
+                    b_proj = proj
+            # compute traveled into segment distance
+            traveled = (b_frac * seg_lengths[b_seg]) if seg_lengths and b_seg < len(seg_lengths) else 0.0
+            return b_seg, b_frac, b_dist, traveled, b_proj
+
+        best_seg, best_frac, best_dist, traveled_in_seg, _ = _project_point_to_poly(start_latlon)
+        current_seg = best_seg
         if logger:
-            logger.info(f'Chosen start vertex {current_seg} (dist {best_dist:.1f} m)')
+            logger.info(f'Chosen start projection seg={current_seg} frac={best_frac:.3f} (dist {best_dist:.1f} m)')
+
+        # If we have an explicit end point, check if the end projects behind the start
+        # along the polyline; if so, reverse the points so simulation moves toward end.
+        if end_latlon is not None and len(points) >= 2:
+            # compute absolute distance along polyline for start and end
+            cum = cumulative_lengths(seg_lengths)
+            start_abs = cum[current_seg] + traveled_in_seg
+
+            # project end onto original polyline
+            e_seg, e_frac, e_dist, e_traveled, _ = _project_point_to_poly(end_latlon)
+            end_abs = cum[e_seg] + e_traveled
+            total_len = cum[-1]
+            if end_abs < start_abs:
+                # reverse points so movement proceeds towards the end point
+                points = list(reversed(points))
+                seg_lengths = segment_distances(points)
+                cum = cumulative_lengths(seg_lengths)
+                # map start_abs to new polyline coordinate
+                new_start_abs = total_len - start_abs
+                pt, new_seg_idx, new_frac = get_point_at_distance(points, seg_lengths, new_start_abs)
+                current_seg = new_seg_idx
+                traveled_in_seg = new_frac * seg_lengths[current_seg] if seg_lengths and current_seg < len(seg_lengths) else 0.0
+                if logger:
+                    logger.info('Reversed route points because end was behind start; adjusted start to seg=%s frac=%.3f', current_seg, new_frac)
     elif start_offset_m is not None:
         pt, seg_idx, frac = get_point_at_distance(points, seg_lengths, start_offset_m)
         current_seg = seg_idx
@@ -153,6 +212,33 @@ def run_simulation(points: List[Tuple[float, float]], bus_id: str, base_url: str
     else:
         current_seg = 0
         traveled_in_seg = 0.0
+
+    # Send an immediate initial update at the computed start position so the
+    # backend records the bus at the chosen start (important when starting a trip).
+    try:
+        if seg_lengths and 0 <= current_seg < len(seg_lengths) and seg_lengths[current_seg] > 0:
+            start_frac = traveled_in_seg / seg_lengths[current_seg]
+        else:
+            start_frac = 0.0
+        start_pt = interp(points[current_seg], points[current_seg + 1], start_frac) if current_seg < len(points) - 1 else points[-1]
+        start_payload = {'bus_id': str(bus_id), 'latitude': start_pt[0], 'longitude': start_pt[1]}
+        if local:
+            if logger:
+                logger.info('Initial LOCAL start update %s', start_payload)
+            else:
+                print('INITIAL', start_payload)
+        else:
+            # best-effort send (ignore failures)
+            try:
+                requests.post(update_url, json=start_payload, headers=headers, timeout=5)
+                if logger:
+                    logger.info('Sent initial start update to server: %s', start_payload)
+            except Exception:
+                if logger:
+                    logger.exception('Failed to send initial start update')
+    except Exception:
+        if logger:
+            logger.exception('Error while preparing initial start update')
 
     loop_count = 0
     while True:
@@ -295,6 +381,18 @@ def main(argv=None):
                                 masked = tok[:10] + '...' if len(tok) > 13 else tok
                                 temp_logger.info('Got token (masked=%s) from %s', masked, base)
                                 args.token = tok
+                                # Also auto-set bus_id/route_id when provided in the login response
+                                try:
+                                    bid = data.get('bus_id') or data.get('bus') and (data.get('bus').get('id') if isinstance(data.get('bus'), dict) else None)
+                                    rid = data.get('route_id')
+                                    if bid and not args.bus_id:
+                                        args.bus_id = str(bid)
+                                        temp_logger.info('Auto-set --bus-id to %s from login response', args.bus_id)
+                                    if rid and not args.route_id:
+                                        args.route_id = str(rid)
+                                        temp_logger.info('Auto-set --route-id to %s from login response', args.route_id)
+                                except Exception:
+                                    temp_logger.exception('Failed to extract bus/route from login response')
                                 break
                         else:
                             temp_logger.warning('Login to %s returned %s', base, r.status_code)
@@ -316,7 +414,37 @@ def main(argv=None):
                         continue
                     js = r.json()
                     temp_logger.debug('driver/me json: %s', json.dumps(js)[:1000])
-                    # populate bus id if available
+                    # Helper: try to parse various possible fields for driver-selected start/end
+                    def _parse_point_any(obj):
+                        # dict with 'coordinates' or 'coords'
+                        if isinstance(obj, dict):
+                            pt = _extract_point_from_geojson_point(obj)
+                            if pt:
+                                return pt
+                            # maybe { 'latitude': ..., 'longitude': ... }
+                            if 'latitude' in obj and 'longitude' in obj:
+                                try:
+                                    return (float(obj['latitude']), float(obj['longitude']))
+                                except Exception:
+                                    pass
+                            if 'lat' in obj and 'lon' in obj:
+                                try:
+                                    return (float(obj['lat']), float(obj['lon']))
+                                except Exception:
+                                    pass
+                        # list/tuple like [lat, lon] or [lon, lat]
+                        if isinstance(obj, (list, tuple)) and len(obj) >= 2:
+                            try:
+                                a0 = float(obj[0])
+                                a1 = float(obj[1])
+                                # Heuristic: if first value > 90 assume it's lon,lat => convert
+                                if abs(a0) > 90:
+                                    return (a1, a0)
+                                return (a0, a1)
+                            except Exception:
+                                pass
+                        return None
+                    # populate bus id if available (do not use bus current_point)
                     bus = js.get('bus')
                     if isinstance(bus, dict):
                         try:
@@ -327,57 +455,121 @@ def main(argv=None):
                                 temp_logger.info('Auto-set --bus-id to %s', args.bus_id)
                         except Exception:
                             temp_logger.exception('Failed to extract bus id from bus object')
-                        p = _extract_point_from_geojson_point(bus.get('current_point'))
-                    else:
-                        p = None
-
-                    # extract route geometry if present
+                    # extract route geometry if present in driver/me
                     route = js.get('route')
                     if isinstance(route, dict):
                         geom = route.get('geometry')
                         if isinstance(geom, dict) and geom.get('type') == 'LineString':
                             points = [(c[1], c[0]) for c in geom.get('coordinates')]
                             temp_logger.info('Auto-filled route geometry from driver/me')
-                        else:
-                            # maybe stops only; try to derive start/end
-                            stops = route.get('stops')
-                            if isinstance(stops, list) and len(stops) >= 2 and points is None:
-                                p0 = _extract_point_from_geojson_point(stops[0].get('location') or stops[0].get('point'))
-                                pN = _extract_point_from_geojson_point(stops[-1].get('location') or stops[-1].get('point'))
-                                if p0 and pN and points is None:
-                                    points = [p0, pN]
-                                    temp_logger.info('Built simple route from stops (start/end)')
+                    # Attempt to read driver-selected start/end stops from profile
+                    # (CustomUserProfile.selected_start_stop / selected_end_stop).
+                    # These fields are expected to be Stop objects or point-like dicts.
+                    found_start = None
+                    found_end = None
+                    try:
+                        for k in ('selected_start_stop', 'selected_start', 'selected_start_point', 'selected_start_location'):
+                            if js.get(k) is not None:
+                                val = js.get(k)
+                                if isinstance(val, dict):
+                                    candidate = val.get('location') or val.get('point') or val
+                                else:
+                                    candidate = val
+                                pt = _extract_point_from_geojson_point(candidate)
+                                if pt:
+                                    found_start = pt
+                                    temp_logger.info('Found driver-selected start stop from %s -> %s', k, found_start)
+                                    break
+                        for k in ('selected_end_stop', 'selected_end', 'selected_end_point', 'selected_end_location', 'destination'):
+                            if js.get(k) is not None:
+                                val = js.get(k)
+                                if isinstance(val, dict):
+                                    candidate = val.get('location') or val.get('point') or val
+                                else:
+                                    candidate = val
+                                pt = _extract_point_from_geojson_point(candidate)
+                                if pt:
+                                    found_end = pt
+                                    temp_logger.info('Found driver-selected end stop from %s -> %s', k, found_end)
+                                    break
+                    except Exception:
+                        temp_logger.exception('Error while extracting selected start/end from driver/me')
+
+                    # If the backend only provides selected_start_stop_id / selected_end_stop_id,
+                    # try to resolve those IDs by searching the available `stops` arrays in the
+                    # `driver/me` response or under `route.stops`.
+                    try:
+                        def _resolve_id_to_point(id_val):
+                            if id_val is None:
+                                return None
+                            # Candidate places to look for stops
+                            candidates = []
+                            if isinstance(js.get('stops'), list):
+                                candidates.extend(js.get('stops'))
+                            if isinstance(route, dict) and isinstance(route.get('stops'), list):
+                                candidates.extend(route.get('stops'))
+                            # Also allow 'stops' under top-level 'route' field name variations
+                            rt = js.get('route')
+                            if isinstance(rt, dict) and isinstance(rt.get('stops'), list):
+                                candidates.extend(rt.get('stops'))
+                            for s in candidates:
+                                if not isinstance(s, dict):
+                                    continue
+                                sid = s.get('id') or s.get('pk') or s.get('stop_id') or s.get('stopId')
+                                try:
+                                    if sid is not None and int(sid) == int(id_val):
+                                        # try common fields
+                                        for fld in ('location', 'point', 'geometry'):
+                                            if s.get(fld):
+                                                pt = _extract_point_from_geojson_point(s.get(fld))
+                                                if pt:
+                                                    return pt
+                                        # lat/lon fields
+                                        if 'latitude' in s and 'longitude' in s:
+                                            try:
+                                                return (float(s['latitude']), float(s['longitude']))
+                                            except Exception:
+                                                pass
+                                        if 'lat' in s and ('lon' in s or 'lng' in s):
+                                            try:
+                                                return (float(s['lat']), float(s.get('lon') or s.get('lng')))
+                                            except Exception:
+                                                pass
+                                except Exception:
+                                    continue
+                            return None
+
+                        # check for id fields
+                        for id_key in ('selected_start_stop_id', 'selected_start_id', 'selected_start_stop'):
+                            if found_start is None and js.get(id_key) is not None:
+                                pt = _resolve_id_to_point(js.get(id_key))
+                                if pt:
+                                    found_start = pt
+                                    temp_logger.info('Resolved driver-selected start from id %s -> %s', id_key, found_start)
+                                    break
+                        for id_key in ('selected_end_stop_id', 'selected_end_id', 'selected_end_stop', 'destination_id'):
+                            if found_end is None and js.get(id_key) is not None:
+                                pt = _resolve_id_to_point(js.get(id_key))
+                                if pt:
+                                    found_end = pt
+                                    temp_logger.info('Resolved driver-selected end from id %s -> %s', id_key, found_end)
+                                    break
+                    except Exception:
+                        temp_logger.exception('Error while resolving selected start/end ids from driver/me')
+
+                    if found_start and not args.start_latlon:
+                        args.start_latlon = f"{found_start[0]},{found_start[1]}"
+                        temp_logger.info('Auto-set --start-latlon to %s from driver profile', args.start_latlon)
+                    if found_end and not args.end_latlon:
+                        args.end_latlon = f"{found_end[0]},{found_end[1]}"
+                        temp_logger.info('Auto-set --end-latlon to %s from driver profile', args.end_latlon)
 
                     # active trip may contain origin/destination
-                    active_trip_id = js.get('active_trip_id')
-                    if active_trip_id and (p is None or points is None):
-                        try:
-                            temp_logger.info('Fetching active trip %s from %s', active_trip_id, base)
-                            tr = requests.get(f"{base}/trips/{active_trip_id}/", headers=headers, timeout=5)
-                            temp_logger.debug('trip response status=%s text=%s', tr.status_code, tr.text)
-                            if tr.status_code == 200:
-                                tj = tr.json()
-                                temp_logger.debug('trip json keys: %s', list(tj.keys()))
-                                for key in ('origin','origin_point','start_point','start_location'):
-                                    if tj.get(key) and p is None:
-                                        p = _extract_point_from_geojson_point(tj.get(key))
-                                for key in ('destination','end_point','end_location','destination_point'):
-                                    if tj.get(key) and points is None:
-                                        dest = _extract_point_from_geojson_point(tj.get(key))
-                                        if dest and p:
-                                            points = [p, dest]
-                        except Exception:
-                            temp_logger.exception('Failed to fetch/parse active trip %s', active_trip_id)
+                    # Active-trip fetch disabled: we will not GET /api/trips/<id>/.
+                    temp_logger.debug('Active-trip fetch skipped by simulator configuration')
 
-                    # if we found a starting point, set start_latlon
-                    if 'p' in locals() and p:
-                        args.start_latlon = f"{p[0]},{p[1]}"
-                        temp_logger.info('Auto-set --start-latlon to %s', args.start_latlon)
-                    # if driver route provided start/end in variables above, set end_latlon
-                    if points is not None and len(points) >= 2 and args.end_latlon is None:
-                        # use last point as end
-                        args.end_latlon = f"{points[-1][0]},{points[-1][1]}"
-                        temp_logger.info('Auto-set --end-latlon to %s', args.end_latlon)
+                    # Do not inspect driver-selected fields here. Start/end will only
+                    # be derived from an active trip if present (handled above).
                     break
                 except Exception:
                     temp_logger.exception('Exception during driver/me processing for base %s', base)

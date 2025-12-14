@@ -8,6 +8,7 @@ class DestinationResult {
   final double latitude;
   final double longitude;
   final String source; // "mapbox" or "bus_stop"
+  final Map<String, dynamic>? snappedData; // Raw backend snap response
 
   DestinationResult({
     required this.name,
@@ -19,10 +20,11 @@ class DestinationResult {
     required this.latitude,
     required this.longitude,
     required this.source,
+    this.snappedData,
   });
 
   @override
   String toString() {
-    return 'DestinationResult(name: $name, stopId: $stopId, order: $order, routeId: $routeId, lat: $latitude, lon: $longitude, source: $source)';
+    return 'DestinationResult(name: $name, stopId: $stopId, order: $order, routeId: $routeId, lat: $latitude, lon: $longitude, source: $source, snapped=${snappedData != null})';
   }
 }

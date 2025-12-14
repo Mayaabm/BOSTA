@@ -14,6 +14,9 @@ class CustomUserProfile(models.Model):
     destination_route = models.ForeignKey('Route', on_delete=models.SET_NULL, null=True, blank=True, related_name='riders_destination')
     # The stop closest to the rider when they requested planning
     origin_stop = models.ForeignKey('Stop', on_delete=models.SET_NULL, null=True, blank=True, related_name='riders_origin')
+    # Driver-selected start/end stops for trip setup (nullable)
+    selected_start_stop = models.ForeignKey('Stop', on_delete=models.SET_NULL, null=True, blank=True, related_name='drivers_selected_start')
+    selected_end_stop = models.ForeignKey('Stop', on_delete=models.SET_NULL, null=True, blank=True, related_name='drivers_selected_end')
     is_driver = models.BooleanField(default=False)
     is_commuter = models.BooleanField(default=True)
 

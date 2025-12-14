@@ -37,6 +37,7 @@ class ApiEndpoints {
 
   // --- Search ---
   static String get searchStops => '$base/stops/';
+  static String get nearestForDestination => '$base/stops/nearest_for_destination/';
 
   // --- Development ---
   static String get devRiderLocation => '$base/dev/rider_location/';

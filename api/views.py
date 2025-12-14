@@ -5,6 +5,7 @@ from rest_framework import generics, status
 from rest_framework.response import Response
 from rest_framework.views import APIView
 from .models import VehiclePosition, Trip, Route, Bus, CustomUserProfile, Stop
+from .utils import nearest_geojson_stop
 from datetime import timedelta
 import datetime
 from django.contrib.auth.models import User
@@ -278,6 +279,127 @@ def route_detail(request, route_id):
     serializer = RouteSerializer(route)
     return Response(serializer.data)
 
+
+
+@api_view(['GET'])
+def nearest_stop_geojson(request):
+    """
+    Returns the nearest stop from the local `routes/bus_stops.geojson` file.
+    Query params: `lat`, `lon`, optional `max_km` to filter by maximum distance (km).
+    """
+    try:
+        lat_s = request.query_params.get('lat')
+        lon_s = request.query_params.get('lon')
+        if lat_s is None or lon_s is None:
+            return Response({'error': 'lat and lon are required query params'}, status=400)
+        lat = float(lat_s); lon = float(lon_s)
+        max_km = request.query_params.get('max_km')
+        max_km_f = float(max_km) if max_km is not None else None
+
+        stop = nearest_geojson_stop(lat, lon, max_km=max_km_f)
+        if not stop:
+            return Response({'error': 'No nearby stop found'}, status=404)
+
+        props = stop.get('properties', {})
+        # Derive a friendly name from available properties
+        name = props.get('stop_name') or props.get('route_name') or props.get('name') or None
+        if not name:
+            so = props.get('stop_order')
+            name = f"stop {so}" if so is not None else None
+
+        return Response({
+            'name': name,
+            'properties': props,
+            'latitude': stop.get('lat'),
+            'longitude': stop.get('lon'),
+            'distance_km': round(stop.get('distance_km', 0.0), 6)
+        })
+    except ValueError:
+        return Response({'error': 'Invalid numeric parameters'}, status=400)
+    except Exception as e:
+        logger.exception("nearest_stop_geojson: unexpected error")
+        return Response({'error': 'internal error'}, status=500)
+
+
+@api_view(['GET'])
+def nearest_stops_for_destination(request):
+    """
+    New endpoint: Given a destination coordinate (dest_lat, dest_lon) and optionally
+    the rider's current location (user_lat, user_lon), return:
+      - a snapped destination (nearest known stop from geojson)
+      - nearest destination stop(s) from the DB (top N)
+      - nearest boarding stop(s) from the rider location (top N)
+
+    Query params:
+      dest_lat (required), dest_lon (required)
+      user_lat (optional), user_lon (optional)
+      n (optional, default 3)
+    """
+    try:
+        dest_lat_s = request.query_params.get('dest_lat') or request.query_params.get('lat')
+        dest_lon_s = request.query_params.get('dest_lon') or request.query_params.get('lon')
+        if dest_lat_s is None or dest_lon_s is None:
+            return Response({'error': 'dest_lat and dest_lon are required'}, status=400)
+        dest_lat = float(dest_lat_s); dest_lon = float(dest_lon_s)
+
+        n = int(request.query_params.get('n', 3))
+
+        # Snap destination to nearest known stop from geojson (best effort)
+        snapped = None
+        try:
+            snapped_raw = nearest_geojson_stop(dest_lat, dest_lon, max_km=None)
+            if snapped_raw:
+                snapped = {
+                    'latitude': snapped_raw.get('lat'),
+                    'longitude': snapped_raw.get('lon'),
+                    'distance_km': round(snapped_raw.get('distance_km', 0.0), 6),
+                    'properties': snapped_raw.get('properties', {})
+                }
+        except Exception:
+            snapped = None
+
+        # Find nearest stops in the DB to the destination coordinate
+        dest_point = Point(dest_lon, dest_lat, srid=4326)
+        dest_near_qs = Stop.objects.annotate(distance=Distance('location', dest_point)).order_by('distance')[:n]
+        dest_nearest = []
+        for s in dest_near_qs:
+            dest_nearest.append({
+                'id': s.id,
+                'name': s.name,
+                'route': s.route.name if s.route else None,
+                'distance_m': round(getattr(s, 'distance').m if hasattr(getattr(s, 'distance'), 'm') else float(getattr(s, 'distance') or 0.0), 1),
+                'latitude': s.location.y,
+                'longitude': s.location.x,
+            })
+
+        boarding_nearest = []
+        user_lat_s = request.query_params.get('user_lat')
+        user_lon_s = request.query_params.get('user_lon')
+        if user_lat_s and user_lon_s:
+            user_lat = float(user_lat_s); user_lon = float(user_lon_s)
+            user_point = Point(user_lon, user_lat, srid=4326)
+            user_near_qs = Stop.objects.annotate(distance=Distance('location', user_point)).order_by('distance')[:n]
+            for s in user_near_qs:
+                boarding_nearest.append({
+                    'id': s.id,
+                    'name': s.name,
+                    'route': s.route.name if s.route else None,
+                    'distance_m': round(getattr(s, 'distance').m if hasattr(getattr(s, 'distance'), 'm') else float(getattr(s, 'distance') or 0.0), 1),
+                    'latitude': s.location.y,
+                    'longitude': s.location.x,
+                })
+
+        return Response({
+            'snapped_destination': snapped,
+            'destination_nearest_stops': dest_nearest,
+            'boarding_nearest_stops': boarding_nearest,
+        })
+    except ValueError:
+        return Response({'error': 'Invalid numeric parameters'}, status=400)
+    except Exception:
+        logger.exception('nearest_stops_for_destination: unexpected error')
+        return Response({'error': 'internal error'}, status=500)
+
 @api_view(['GET'])
 def get_bus_details(request, bus_id):
     """
@@ -550,6 +672,8 @@ def get_driver_profile(request):
             "phone_number": str(driver_profile.phone_number) if driver_profile.phone_number else None,
             "bus": BusNearbySerializer(bus).data if bus else None,
             "route": route_serializer.data if route_serializer else None,
+            "selected_start_stop_id": driver_profile.selected_start_stop.id if getattr(driver_profile, 'selected_start_stop', None) else None,
+            "selected_end_stop_id": driver_profile.selected_end_stop.id if getattr(driver_profile, 'selected_end_stop', None) else None,
             "active_trip_id": active_trip_id,
             "onboarding_complete": is_complete, # Return the calculated status
         }
@@ -588,6 +712,9 @@ def driver_onboard(request):
     bus_plate = (request.data.get('bus_plate_number') or '').strip()
     bus_capacity = request.data.get('bus_capacity')
     route_id = request.data.get('route_id')
+    # Optional selected start/end stops from driver UI
+    selected_start_id = request.data.get('selected_start_stop_id')
+    selected_end_id = request.data.get('selected_end_stop_id')
     logger.info(f"[driver_onboard] Parsed fields: first_name={first_name}, last_name={last_name}, phone={phone}, bus_plate={bus_plate}, bus_capacity={bus_capacity}, route_id={route_id}")
 
     # --- FIX: Update user and profile information separately to ensure saves are atomic ---
@@ -644,6 +771,30 @@ def driver_onboard(request):
     latest_trip = Trip.objects.filter(bus=bus).order_by('-departure_time').first() if bus else None
     logger.info(f"[driver_onboard] Latest trip for bus: {latest_trip}")
 
+    # Persist selected start/end stops on the driver's profile if provided
+    try:
+        if selected_start_id:
+            try:
+                start_stop = Stop.objects.get(pk=selected_start_id)
+                profile.selected_start_stop = start_stop
+            except Stop.DoesNotExist:
+                logger.warning(f"[driver_onboard] selected_start_stop_id {selected_start_id} does not exist")
+        else:
+            profile.selected_start_stop = None
+
+        if selected_end_id:
+            try:
+                end_stop = Stop.objects.get(pk=selected_end_id)
+                profile.selected_end_stop = end_stop
+            except Stop.DoesNotExist:
+                logger.warning(f"[driver_onboard] selected_end_stop_id {selected_end_id} does not exist")
+        else:
+            profile.selected_end_stop = None
+
+        profile.save(update_fields=['selected_start_stop', 'selected_end_stop'])
+    except Exception:
+        logger.exception("[driver_onboard] Failed to save selected start/end stops on profile")
+
     # Do NOT create a trip here. Trip creation should only happen when the driver explicitly starts a trip.
 
     # Return collected onboarding result
@@ -653,6 +804,8 @@ def driver_onboard(request):
         "route": RouteSerializer(selected_route).data if selected_route else (RouteSerializer(latest_trip.route).data if (latest_trip and latest_trip.route) else None),
         "trip_id": None, # This endpoint no longer creates trips
         "active_trip_id": None,
+        "selected_start_stop_id": profile.selected_start_stop.id if getattr(profile, 'selected_start_stop', None) else None,
+        "selected_end_stop_id": profile.selected_end_stop.id if getattr(profile, 'selected_end_stop', None) else None,
     }
     logger.info(f"[driver_onboard] Response data: {data}")
 

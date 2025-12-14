@@ -17,6 +17,7 @@ class ServerConfigScreen extends StatefulWidget {
 class _ServerConfigScreenState extends State<ServerConfigScreen> {
   late TextEditingController _hostController;
   late TextEditingController _portController;
+  late TextEditingController _mapboxController;
   bool _isTestingConnection = false;
   String? _connectionStatus;
 
@@ -26,12 +27,14 @@ class _ServerConfigScreenState extends State<ServerConfigScreen> {
     final config = ConfigService();
     _hostController = TextEditingController(text: config.serverHost);
     _portController = TextEditingController(text: config.serverPort.toString());
+    _mapboxController = TextEditingController(text: config.mapboxToken ?? '');
   }
 
   @override
   void dispose() {
     _hostController.dispose();
     _portController.dispose();
+    _mapboxController.dispose();
     super.dispose();
   }
 
@@ -104,6 +107,8 @@ class _ServerConfigScreenState extends State<ServerConfigScreen> {
     }
 
     ConfigService().setServerConfig(host: host, port: port);
+    // Save mapbox token (can be empty to clear)
+    ConfigService().setMapboxToken(_mapboxController.text.trim());
 
     ScaffoldMessenger.of(context).showSnackBar(
       SnackBar(content: Text('Server configured: http://$host:$port/api')),
@@ -189,6 +194,32 @@ class _ServerConfigScreenState extends State<ServerConfigScreen> {
                 fontWeight: FontWeight.w600,
                 color: const Color(0xFF2C3E50),
               ),
+            ),
+            const SizedBox(height: 24),
+            // Mapbox Token Input
+            Text(
+              'Mapbox Access Token (optional)',
+              style: GoogleFonts.poppins(
+                fontSize: 14,
+                fontWeight: FontWeight.w600,
+                color: const Color(0xFF2C3E50),
+              ),
+            ),
+            const SizedBox(height: 8),
+            TextField(
+              controller: _mapboxController,
+              decoration: InputDecoration(
+                hintText: 'pk.... (your Mapbox public token)',
+                hintStyle: GoogleFonts.poppins(color: Colors.grey),
+                border: OutlineInputBorder(
+                  borderRadius: BorderRadius.circular(8),
+                ),
+                contentPadding: const EdgeInsets.symmetric(
+                  horizontal: 16,
+                  vertical: 12,
+                ),
+              ),
+              style: GoogleFonts.poppins(),
             ),
             const SizedBox(height: 8),
             TextField(

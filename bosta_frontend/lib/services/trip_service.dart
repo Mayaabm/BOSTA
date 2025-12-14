@@ -4,6 +4,7 @@ import 'package:flutter/foundation.dart';
 import 'package:http/http.dart' as http;
 import 'auth_service.dart';
 import 'logger.dart';
+import 'config_service.dart';
 
 class TripService {
   // IMPORTANT: For production, this should be loaded from a secure configuration
@@ -13,6 +14,8 @@ class TripService {
 
   /// Returns the Mapbox access token.
   static String getMapboxAccessToken() {
+    final configured = ConfigService().mapboxToken;
+    if (configured != null && configured.isNotEmpty) return configured;
     return _mapboxAccessToken;
   }
 
