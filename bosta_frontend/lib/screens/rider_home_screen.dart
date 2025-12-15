@@ -475,6 +475,9 @@ class _RiderHomeScreenState extends State<RiderHomeScreen> with TickerProviderSt
               if (destNearest.isNotEmpty) ...[
                 const SizedBox(height: 8),
                 Text('Nearest stop: ${destNearest[0]['name'] ?? 'Unknown'} • ${destNearest[0]['distance_m']?.toStringAsFixed(0) ?? ''} m', style: const TextStyle(color: Colors.white70)),
+                const SizedBox(height: 8),
+                // Route names removed from this modal popup per user request.
+                const SizedBox.shrink(),
               ],
               const SizedBox(height: 12),
               Row(
@@ -621,6 +624,9 @@ class _RiderHomeScreenState extends State<RiderHomeScreen> with TickerProviderSt
             // When a bus is tapped in the list, treat it like a map marker tap.
             _onBusMarkerTapped(bus);
           },
+          snappedStopId: _snappedStopId,
+          riderLat: _currentPosition?.latitude,
+          riderLon: _currentPosition?.longitude,
         ),
         body: Stack(
           children: [
@@ -662,21 +668,24 @@ class _RiderHomeScreenState extends State<RiderHomeScreen> with TickerProviderSt
                         if (_snappedStopLocation != null)
                           Marker(
                             point: _snappedStopLocation!,
-                            width: 36,
-                            height: 36,
+                            width: 140,
+                            height: 56,
                             child: Column(
                               mainAxisSize: MainAxisSize.min,
                               children: [
-                                Container(
-                                  padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 4),
-                                  decoration: BoxDecoration(color: const Color(0xFF1F2327), borderRadius: BorderRadius.circular(6)),
-                                  child: Text(_snappedStopName ?? 'Stop', style: GoogleFonts.urbanist(color: Colors.white, fontSize: 12)),
+                                Flexible(
+                                  child: Container(
+                                    padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 6),
+                                    constraints: const BoxConstraints(maxWidth: 120),
+                                    decoration: BoxDecoration(color: const Color(0xFF1F2327), borderRadius: BorderRadius.circular(6)),
+                                    child: Text(_snappedStopName ?? 'Stop', style: GoogleFonts.urbanist(color: Colors.white, fontSize: 12), overflow: TextOverflow.ellipsis),
+                                  ),
                                 ),
                                 const SizedBox(height: 4),
                                 Container(
-                                  width: 20,
-                                  height: 20,
-                                  decoration: BoxDecoration(shape: BoxShape.circle, color: Colors.red, border: Border.all(color: Colors.white, width: 2)),
+                                  width: 12,
+                                  height: 12,
+                                  decoration: BoxDecoration(shape: BoxShape.circle, color: Colors.red, border: Border.all(color: Colors.white, width: 1)),
                                 ),
                               ],
                             ),
@@ -692,21 +701,24 @@ class _RiderHomeScreenState extends State<RiderHomeScreen> with TickerProviderSt
                       if (_snappedStopLocation != null)
                         Marker(
                           point: _snappedStopLocation!,
-                          width: 36,
-                          height: 36,
+                          width: 140,
+                          height: 56,
                           child: Column(
                             mainAxisSize: MainAxisSize.min,
                             children: [
-                              Container(
-                                padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 4),
-                                decoration: BoxDecoration(color: const Color(0xFF1F2327), borderRadius: BorderRadius.circular(6)),
-                                child: Text(_snappedStopName ?? 'Stop', style: GoogleFonts.urbanist(color: Colors.white, fontSize: 12)),
+                              Flexible(
+                                child: Container(
+                                  padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 6),
+                                  constraints: const BoxConstraints(maxWidth: 120),
+                                  decoration: BoxDecoration(color: const Color(0xFF1F2327), borderRadius: BorderRadius.circular(6)),
+                                  child: Text(_snappedStopName ?? 'Stop', style: GoogleFonts.urbanist(color: Colors.white, fontSize: 12), overflow: TextOverflow.ellipsis),
+                                ),
                               ),
                               const SizedBox(height: 4),
                               Container(
-                                width: 20,
-                                height: 20,
-                                decoration: BoxDecoration(shape: BoxShape.circle, color: Colors.red, border: Border.all(color: Colors.white, width: 2)),
+                                width: 12,
+                                height: 12,
+                                decoration: BoxDecoration(shape: BoxShape.circle, color: Colors.red, border: Border.all(color: Colors.white, width: 1)),
                               ),
                             ],
                           ),

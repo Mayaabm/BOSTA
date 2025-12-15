@@ -11,7 +11,7 @@ import datetime
 from django.contrib.auth.models import User
 from django.contrib.gis.measure import D  
 from django.contrib.gis.db.models.functions import Distance
-from django.db.models import OuterRef, Subquery
+from django.db.models import OuterRef, Subquery, Q
 from django.db.models.functions import Coalesce, Cast
 from .serializers import BusNearbySerializer, RouteSerializer, TripSerializer
 from django.contrib.auth import authenticate
@@ -1002,13 +1002,61 @@ def buses_to_destination(request):
     # This lets us suggest drivers that will pass near the chosen location even if
     # the target is not their explicit stop/destination.
 
-    # Buffer (meters) to consider routes near the chosen location
-    ROUTE_BUFFER_M = 500
+    # Buffers (meters) to consider routes/stops near the chosen location
+    ROUTE_BUFFER_M = 800
+    STOP_BUFFER_M = 1000
 
-    # Find candidate routes
-    routes = Route.objects.filter(geometry__dwithin=(target_point, D(m=ROUTE_BUFFER_M)))
+    # Find candidate routes by geometry buffer (routes whose geometry comes within ROUTE_BUFFER_M)
+    geom_routes_qs = Route.objects.filter(geometry__dwithin=(target_point, D(m=ROUTE_BUFFER_M)))
+
+    # Also consider routes that have any DB stop within STOP_BUFFER_M of the destination.
+    # This captures routes whose stops are near the destination even if the route geometry
+    # itself isn't within the stricter ROUTE_BUFFER_M.
+    try:
+        nearby_stops_qs = Stop.objects.annotate(distance=Distance('location', target_point)).filter(distance__lte=D(m=STOP_BUFFER_M)).order_by('distance')
+        nearest_stops_qs = list(nearby_stops_qs[:50])
+        nearest_stop_route_ids_set = set()
+        for s in nearest_stops_qs:
+            try:
+                related_route_ids = list(Route.objects.filter(stops__id=s.id).values_list('id', flat=True))
+                for rr in related_route_ids:
+                    nearest_stop_route_ids_set.add(rr)
+            except Exception:
+                if getattr(s, 'route', None):
+                    try:
+                        nearest_stop_route_ids_set.add(s.route.id)
+                    except Exception:
+                        pass
+        nearest_stop_route_ids = list(nearest_stop_route_ids_set)
+    except Exception:
+        nearest_stops_qs = []
+        nearest_stop_route_ids = []
+
+    # Combine route querysets: geometry-based OR routes that own nearby stops
+    if nearest_stop_route_ids:
+        routes = Route.objects.filter(Q(geometry__dwithin=(target_point, D(m=ROUTE_BUFFER_M))) | Q(id__in=nearest_stop_route_ids)).distinct()
+    else:
+        routes = geom_routes_qs
+
     route_count = routes.count()
-    logger.info('[buses_to_destination] target=(%s,%s) ROUTE_BUFFER_M=%s -> candidate routes=%d', target_lat, target_lon, ROUTE_BUFFER_M, route_count)
+
+    # Log candidate routes (id and name) and the nearest DB stops considered
+    try:
+        candidate_routes_summary = [f"{r.id}:{r.name}" for r in routes]
+    except Exception:
+        candidate_routes_summary = str(list(routes.values_list('id', flat=True)))
+    try:
+        nearest_stops = []
+        for s in nearest_stops_qs:
+            try:
+                dist_m = round(getattr(s, 'distance').m if hasattr(getattr(s, 'distance'), 'm') else float(getattr(s, 'distance') or 0.0), 1)
+            except Exception:
+                dist_m = None
+            nearest_stops.append({'id': s.id, 'name': s.name, 'route': s.route.name if s.route else None, 'distance_m': dist_m})
+    except Exception:
+        nearest_stops = []
+
+    logger.info('[buses_to_destination] target=(%s,%s) ROUTE_BUFFER_M=%s -> candidate routes=%d; candidates=%s; nearest_db_stops=%s', target_lat, target_lon, ROUTE_BUFFER_M, route_count, candidate_routes_summary, nearest_stops)
     trips = Trip.objects.filter(route__in=routes).select_related('bus', 'route')
     trip_count = trips.count()
     logger.info('[buses_to_destination] initial trips count for candidate routes=%d', trip_count)
@@ -1059,54 +1107,68 @@ def buses_to_destination(request):
 
     data = []
     for trip in trips:
-        logger.debug('[buses_to_destination] examining trip id=%s bus_id=%s route=%s', getattr(trip, 'id', None), getattr(trip.bus, 'id', None), getattr(trip.route, 'name', None))
+        # Protect processing of each trip so a single bad trip/geometry doesn't cause a 500
         try:
-            bus_pos = VehiclePosition.objects.filter(bus=trip.bus).latest('recorded_at')
-            logger.debug('[buses_to_destination] found VehiclePosition for bus %s at %s (speed_mps=%s)', trip.bus.id, getattr(bus_pos, 'recorded_at', None), getattr(bus_pos, 'speed_mps', None))
-        except VehiclePosition.DoesNotExist:
-            logger.debug('[buses_to_destination] no VehiclePosition for bus %s; skipping', getattr(trip.bus, 'id', None))
-            continue
+            logger.debug('[buses_to_destination] examining trip id=%s bus_id=%s route=%s', getattr(trip, 'id', None), getattr(trip.bus, 'id', None), getattr(trip.route, 'name', None))
 
-        # Extract route geometry coords (GeoJSON-like order: (lon,lat))
-        geom = getattr(trip.route, 'geometry', None)
-        try:
-            coords = list(geom.coords)
+            try:
+                bus_pos = VehiclePosition.objects.filter(bus=trip.bus).latest('recorded_at')
+                logger.debug('[buses_to_destination] found VehiclePosition for bus %s at %s (speed_mps=%s)', trip.bus.id, getattr(bus_pos, 'recorded_at', None), getattr(bus_pos, 'speed_mps', None))
+            except VehiclePosition.DoesNotExist:
+                logger.debug('[buses_to_destination] no VehiclePosition for bus %s; skipping', getattr(trip.bus, 'id', None))
+                continue
+
+            # Extract route geometry coords (GeoJSON-like order: (lon,lat))
+            geom = getattr(trip.route, 'geometry', None)
+            if not geom:
+                logger.debug('[buses_to_destination] trip=%s has no geometry; skipping', getattr(trip, 'id', None))
+                continue
+            try:
+                coords = list(geom.coords)
+            except Exception:
+                logger.exception('[buses_to_destination] failed to extract coords for route of trip=%s; skipping', getattr(trip, 'id', None))
+                continue
+
+            # Project target and bus position onto route
+            try:
+                target_proj = project_point_onto_linestring(coords, target_lat, target_lon)
+                bus_proj = project_point_onto_linestring(coords, bus_pos.location.y, bus_pos.location.x)
+            except Exception:
+                logger.exception('[buses_to_destination] projection failed for trip=%s; skipping', getattr(trip, 'id', None))
+                continue
+
+            logger.debug('[buses_to_destination] trip=%s target_proj perp=%.1fm abs_dist=%.1fm total_len=%.1fm', getattr(trip, 'id', None), target_proj['perp_dist_m'], target_proj['abs_dist'], target_proj['total_length_m'])
+            logger.debug('[buses_to_destination] trip=%s bus_proj perp=%.1fm abs_dist=%.1fm', getattr(trip, 'id', None), bus_proj['perp_dist_m'], bus_proj['abs_dist'])
+
+            # Only consider this bus if the target projects onto the route reasonably close
+            # (perpendicular distance less than buffer) and if the bus is upstream of the target
+            if target_proj['perp_dist_m'] <= ROUTE_BUFFER_M:
+                # compute along-route distance from bus to target (positive means bus before target)
+                along_m = target_proj['abs_dist'] - bus_proj['abs_dist']
+                # estimate bus speed
+                speed_mps = bus_pos.speed_mps if getattr(bus_pos, 'speed_mps', None) and bus_pos.speed_mps > 0 else 10.0
+                eta_seconds = abs(along_m) / speed_mps if speed_mps > 0 else None
+                eta_minutes = round(eta_seconds/60.0, 1) if eta_seconds is not None else None
+
+                # include bus if it's going to pass near the target within a reasonable window (e.g., 90 minutes)
+                logger.debug('[buses_to_destination] trip=%s along_m=%.1f m eta_min=%s', getattr(trip, 'id', None), along_m, eta_minutes)
+                if eta_minutes is not None and eta_minutes <= 90:
+                    entry = {
+                        'bus_id': str(trip.bus.id),
+                        'route': trip.route.name,
+                        'eta_min': eta_minutes,
+                        'current_lat': getattr(bus_pos.location, 'y', None),
+                        'current_lon': getattr(bus_pos.location, 'x', None),
+                        'distance_to_route_m': bus_proj['perp_dist_m'],
+                        'target_perp_dist_m': target_proj['perp_dist_m'],
+                        'along_route_to_target_m': along_m,
+                    }
+                    logger.info('[buses_to_destination] suggesting bus=%s route=%s eta_min=%.1f perp_dist=%.1f along_m=%.1f', entry['bus_id'], entry['route'], entry['eta_min'], entry['target_perp_dist_m'], entry['along_route_to_target_m'])
+                    data.append(entry)
         except Exception:
-            # Skip routes without accessible coordinates
+            logger.exception('[buses_to_destination] unexpected error while processing trip %s', getattr(trip, 'id', None))
+            # continue processing other trips rather than aborting the request
             continue
-
-        # Project target and bus position onto route
-        target_proj = project_point_onto_linestring(coords, target_lat, target_lon)
-        bus_proj = project_point_onto_linestring(coords, bus_pos.location.y, bus_pos.location.x)
-        logger.debug('[buses_to_destination] trip=%s target_proj perp=%.1fm abs_dist=%.1fm total_len=%.1fm', getattr(trip, 'id', None), target_proj['perp_dist_m'], target_proj['abs_dist'], target_proj['total_length_m'])
-        logger.debug('[buses_to_destination] trip=%s bus_proj perp=%.1fm abs_dist=%.1fm', getattr(trip, 'id', None), bus_proj['perp_dist_m'], bus_proj['abs_dist'])
-
-        # Only consider this bus if the target projects onto the route reasonably close
-        # (perpendicular distance less than buffer) and if the bus is upstream of the target
-        if target_proj['perp_dist_m'] <= ROUTE_BUFFER_M:
-            # compute along-route distance from bus to target (positive means bus before target)
-            along_m = target_proj['abs_dist'] - bus_proj['abs_dist']
-            # allow small negative values (bus slightly beyond) but generally require within reasonable window
-            # estimate bus speed
-            speed_mps = bus_pos.speed_mps if getattr(bus_pos, 'speed_mps', None) and bus_pos.speed_mps > 0 else 10.0
-            eta_seconds = abs(along_m) / speed_mps if speed_mps > 0 else None
-            eta_minutes = round(eta_seconds/60.0, 1) if eta_seconds is not None else None
-
-            # include bus if it's going to pass near the target within a reasonable window (e.g., 90 minutes)
-            logger.debug('[buses_to_destination] trip=%s along_m=%.1f m eta_min=%s', getattr(trip, 'id', None), along_m, eta_minutes)
-            if eta_minutes is not None and eta_minutes <= 90:
-                entry = {
-                    'bus_id': str(trip.bus.id),
-                    'route': trip.route.name,
-                    'eta_min': eta_minutes,
-                    'current_lat': bus_pos.location.y,
-                    'current_lon': bus_pos.location.x,
-                    'distance_to_route_m': bus_proj['perp_dist_m'],
-                    'target_perp_dist_m': target_proj['perp_dist_m'],
-                    'along_route_to_target_m': along_m,
-                }
-                logger.info('[buses_to_destination] suggesting bus=%s route=%s eta_min=%.1f perp_dist=%.1f along_m=%.1f', entry['bus_id'], entry['route'], entry['eta_min'], entry['target_perp_dist_m'], entry['along_route_to_target_m'])
-                data.append(entry)
 
     logger.info('[buses_to_destination] returning %d suggested buses', len(data))
     return Response(data)
@@ -1291,12 +1353,19 @@ def stop_list(request):
                 # Provide a safe fallback so the API returns usable entries
                 # instead of silently skipping them due to AttributeError.
                 name = getattr(s, 'name', f"Stop {s.order}")
+                # Also include all route ids that reference this stop (many-to-many via FK from Stop to Route in imports)
+                try:
+                    related_route_ids = list(Route.objects.filter(stops__id=s.id).values_list('id', flat=True))
+                except Exception:
+                    related_route_ids = [s.route.id] if getattr(s, 'route', None) else []
+
                 out.append({
                     'id': s.id,
                     'name': name,
                     'order': s.order,
                     'route_id': s.route.id if s.route else None,
                     'route_name': s.route.name if s.route else None,
+                    'route_ids': related_route_ids,
                     'location': {'type': 'Point', 'coordinates': coords},
                 })
             except Exception:

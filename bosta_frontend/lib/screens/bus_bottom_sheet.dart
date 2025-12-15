@@ -4,6 +4,8 @@ import '../utils/formatters.dart';
 import '../models/bus.dart';
 import '../models/trip_suggestion.dart';
 import 'rider_home_screen.dart';
+import '../services/bus_service.dart';
+import 'package:geolocator/geolocator.dart';
 
 class BusBottomSheet extends StatelessWidget {
     final Bus? selectedBus;
@@ -15,6 +17,10 @@ class BusBottomSheet extends StatelessWidget {
   final List<TripSuggestion> tripSuggestions;
   final List<Bus> nearbyBuses;
   final Function(Bus) onBusSelected;
+  // Optional: snapped stop id (string) and rider coordinates for distance calc
+  final String? snappedStopId;
+  final double? riderLat;
+  final double? riderLon;
 
   const BusBottomSheet({
     super.key,
@@ -23,6 +29,9 @@ class BusBottomSheet extends StatelessWidget {
     required this.tripSuggestions,
     required this.nearbyBuses,
     required this.onBusSelected,
+    this.snappedStopId,
+    this.riderLat,
+    this.riderLon,
     this.selectedBus,
     this.etaBusToRider,
     this.etaBusToDestination,
@@ -127,7 +136,26 @@ class BusBottomSheet extends StatelessWidget {
               "Suggestion $suggestionNumber",
               style: GoogleFonts.urbanist(fontSize: 18, fontWeight: FontWeight.bold, color: const Color(0xFF2ED8C3)),
             ),
-            const SizedBox(height: 12),
+            const SizedBox(height: 8),
+            // Show a single centered distance line (simplified view).
+            Builder(builder: (ctx) {
+              String distanceLabel = '';
+              try {
+                final first = suggestion.legs.isNotEmpty ? suggestion.legs.first : null;
+                if (first != null && first.destLat != null && first.destLon != null && riderLat != null && riderLon != null) {
+                  final meters = Geolocator.distanceBetween(riderLat!, riderLon!, first.destLat!, first.destLon!);
+                  if (meters < 1000) distanceLabel = '${meters.round()} m';
+                  else distanceLabel = '${(meters / 1000).toStringAsFixed(1)} km';
+                }
+              } catch (_) {}
+
+              return Padding(
+                padding: const EdgeInsets.only(bottom: 12.0),
+                child: Center(
+                  child: Text(distanceLabel.isNotEmpty ? distanceLabel : '', style: GoogleFonts.urbanist(color: Colors.white70, fontSize: 14)),
+                ),
+              );
+            }),
             ...suggestion.legs.map((leg) => _buildTripLegItem(leg)).toList(),
           ],
         ),
@@ -136,33 +164,15 @@ class BusBottomSheet extends StatelessWidget {
   }
 
   Widget _buildTripLegItem(TripLeg leg) {
+    // Show route name only (distance removed per request).
     return Padding(
-      padding: const EdgeInsets.symmetric(vertical: 8.0),
-      child: Column(
-        crossAxisAlignment: CrossAxisAlignment.start,
-        children: [
-          Row(
-            children: [
-              Icon(Icons.route, color: Colors.white70, size: 20),
-              const SizedBox(width: 8),
-              Expanded(
-                child: Text(
-                  leg.routeName,
-                  style: GoogleFonts.urbanist(fontSize: 16, fontWeight: FontWeight.w600, color: Colors.white),
-                ),
-              ),
-              if (leg.etaMinutes != null)
-                Text(
-                  '~${formatEtaMinutes(leg.etaMinutes)}',
-                  style: GoogleFonts.urbanist(color: const Color(0xFF2ED8C3), fontWeight: FontWeight.bold),
-                ),
-            ],
-          ),
-          const SizedBox(height: 8),
-          _buildLegDetail(Icons.login, "Board at:", leg.boardAt),
-          const SizedBox(height: 4),
-          _buildLegDetail(Icons.logout, "Exit at:", leg.exitAt),
-        ],
+      padding: const EdgeInsets.symmetric(vertical: 12.0),
+      child: Center(
+        child: Text(
+          leg.routeName ?? 'Route',
+          textAlign: TextAlign.center,
+          style: GoogleFonts.urbanist(fontSize: 18, fontWeight: FontWeight.w700, color: Colors.white),
+        ),
       ),
     );
   }

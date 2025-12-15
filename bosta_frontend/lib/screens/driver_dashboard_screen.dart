@@ -15,6 +15,7 @@ import 'dart:convert';
 import 'package:http/http.dart' as http;
 import 'package:bosta_frontend/services/trip_service.dart';
 import 'package:bosta_frontend/services/trip_service.dart' as TS;
+import 'package:go_router/go_router.dart';
 import '../utils/formatters.dart';
 
 class DriverDashboardScreen extends StatefulWidget {
@@ -344,47 +345,49 @@ class _DriverDashboardScreenState extends State<DriverDashboardScreen> with Sing
 
             return MarkerLayer(
               markers: [
+                // Start marker: small modern teal circular marker with white ring
                 Marker(
                   point: fm.LatLng(startStop.location.latitude, startStop.location.longitude),
                   width: 36,
-                  height: 24,
+                  height: 36,
                   child: Container(
                     alignment: Alignment.center,
                     child: Container(
-                      width: 28,
-                      height: 18,
+                      width: 16,
+                      height: 16,
                       decoration: BoxDecoration(
-                        color: Colors.white,
-                        borderRadius: BorderRadius.circular(8),
-                        boxShadow: [BoxShadow(color: Colors.black26, blurRadius: 4, offset: Offset(0, 1))],
+                        shape: BoxShape.circle,
+                        gradient: RadialGradient(
+                          colors: [Color(0xFF6EEED6), Color(0xFF2ED8C3)],
+                          center: Alignment(-0.2, -0.2),
+                          radius: 0.9,
+                        ),
+                        border: Border.all(color: Colors.white, width: 3),
+                        boxShadow: [BoxShadow(color: Colors.black26, blurRadius: 6, offset: Offset(0, 2))],
                       ),
                     ),
                   ),
                 ),
+
+                // End marker: small modern red circular marker with subtle ring
                 Marker(
                   point: fm.LatLng(endStop.location.latitude, endStop.location.longitude),
-                  width: 32,
-                  height: 32,
+                  width: 36,
+                  height: 36,
                   child: Container(
                     alignment: Alignment.center,
                     child: Container(
-                      width: 26,
-                      height: 26,
+                      width: 16,
+                      height: 16,
                       decoration: BoxDecoration(
                         shape: BoxShape.circle,
-                        color: Colors.white,
-                        border: Border.all(color: Colors.grey.shade300, width: 1.0),
-                        boxShadow: [BoxShadow(color: Colors.black12, blurRadius: 4, offset: Offset(0, 1))],
-                      ),
-                      child: Center(
-                        child: Container(
-                          width: 10,
-                          height: 10,
-                          decoration: const BoxDecoration(
-                            shape: BoxShape.circle,
-                            color: Colors.red,
-                          ),
+                        gradient: RadialGradient(
+                          colors: [Color(0xFFFF7A7A), Color(0xFFEA2E2E)],
+                          center: Alignment(-0.2, -0.2),
+                          radius: 0.9,
                         ),
+                        border: Border.all(color: Colors.white, width: 3),
+                        boxShadow: [BoxShadow(color: Colors.black26, blurRadius: 6, offset: Offset(0, 2))],
                       ),
                     ),
                   ),
@@ -557,6 +560,8 @@ class _DriverDashboardScreenState extends State<DriverDashboardScreen> with Sing
       });
 
       ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('Trip ended successfully')));
+      // Navigate back to driver home after ending the trip
+      context.go('/driver/home');
     } catch (e) {
       debugPrint('Error ending trip: $e');
       setState(() => _tripStatus = 'Error ending trip');

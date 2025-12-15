@@ -25,6 +25,8 @@ urlpatterns = [
     path('dev/rider_location/', views.get_dev_rider_location, name='get_dev_rider_location'),
     path('register/', views.register_user, name='register_user'),
     path('plan_trip/', views.plan_trip, name='plan_trip'),
+    # Backwards-compatible route used by frontend code: POST /trips/plan/
+    path('trips/plan/', views.plan_trip, name='trips_plan'),
     path('stops/', views.stop_list, name='stop_list'),
     path('stops/nearest/', views.nearest_stop_geojson, name='nearest_stop_geojson'),
     path('stops/nearest_for_destination/', views.nearest_stops_for_destination, name='nearest_stops_for_destination'),
