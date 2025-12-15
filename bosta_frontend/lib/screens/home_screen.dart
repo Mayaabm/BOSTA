@@ -9,6 +9,7 @@ import 'package:sliding_up_panel/sliding_up_panel.dart';
 import 'package:http/http.dart' as http;
 import 'dart:convert';
 import '../services/trip_service.dart';
+import '../utils/formatters.dart';
 import '../../../models/trip_suggestion.dart';
 import '../../../models/bus.dart';
 import '../../../services/bus_service.dart';
@@ -174,7 +175,7 @@ class _RiderHomeScreenState extends State<RiderHomeScreen> with TickerProviderSt
         if (data['routes'] != null && data['routes'].isNotEmpty) {
           final route = data['routes'][0];
           final double durationSeconds = route['duration']?.toDouble() ?? 0.0;
-          _etaBusToRider = "${(durationSeconds / 60).ceil()} min";
+          _etaBusToRider = formatEtaMinutes((durationSeconds / 60).ceil());
         } else {
           _etaBusToRider = "--";
         }
@@ -195,7 +196,7 @@ class _RiderHomeScreenState extends State<RiderHomeScreen> with TickerProviderSt
             if (data['routes'] != null && data['routes'].isNotEmpty) {
               final route = data['routes'][0];
               final double durationSeconds = route['duration']?.toDouble() ?? 0.0;
-              _etaBusToDestination = "${(durationSeconds / 60).ceil()} min";
+              _etaBusToDestination = formatEtaMinutes((durationSeconds / 60).ceil());
             } else {
               _etaBusToDestination = "--";
             }

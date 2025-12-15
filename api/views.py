@@ -981,30 +981,134 @@ def register_user(request):
 
 @api_view(['GET'])
 def buses_to_destination(request):
-    target_lat = float(request.query_params.get('lat'))
-    target_lon = float(request.query_params.get('lon'))
+    # Validate input params to avoid unhandled exceptions that cause 500
+    lat_p = request.query_params.get('lat')
+    lon_p = request.query_params.get('lon')
+    if lat_p is None or lon_p is None:
+        logger.warning('[buses_to_destination] missing lat/lon params: lat=%s lon=%s', lat_p, lon_p)
+        return Response({'error': 'lat and lon query parameters are required'}, status=400)
+    try:
+        target_lat = float(lat_p)
+        target_lon = float(lon_p)
+    except Exception:
+        logger.exception('[buses_to_destination] invalid lat/lon format: lat=%s lon=%s', lat_p, lon_p)
+        return Response({'error': 'lat and lon must be valid numbers'}, status=400)
     target_point = Point(target_lon, target_lat, srid=4326)
+    # Approach:
+    # - Consider routes whose geometry comes within a buffer of the target.
+    # - For each active trip on those routes, project both the bus current position
+    #   and the target point onto the route polyline and compute along-route distance
+    #   from bus -> target. Estimate ETA using recent bus speed (fallback to 10 m/s).
+    # This lets us suggest drivers that will pass near the chosen location even if
+    # the target is not their explicit stop/destination.
 
-    # Find routes that pass near the destination
-    routes = Route.objects.filter(geometry__dwithin=(target_point, D(m=200)))
-    # Find active trips on these routes
+    # Buffer (meters) to consider routes near the chosen location
+    ROUTE_BUFFER_M = 500
+
+    # Find candidate routes
+    routes = Route.objects.filter(geometry__dwithin=(target_point, D(m=ROUTE_BUFFER_M)))
+    route_count = routes.count()
+    logger.info('[buses_to_destination] target=(%s,%s) ROUTE_BUFFER_M=%s -> candidate routes=%d', target_lat, target_lon, ROUTE_BUFFER_M, route_count)
     trips = Trip.objects.filter(route__in=routes).select_related('bus', 'route')
+    trip_count = trips.count()
+    logger.info('[buses_to_destination] initial trips count for candidate routes=%d', trip_count)
+
+    # helpers (minimal haversine + polyline projection)
+    def haversine_m(a_lat, a_lon, b_lat, b_lon):
+        R = 6371000.0
+        phi1 = math.radians(a_lat); phi2 = math.radians(b_lat)
+        dphi = math.radians(b_lat - a_lat); dlmb = math.radians(b_lon - a_lon)
+        hav = math.sin(dphi/2)**2 + math.cos(phi1)*math.cos(phi2)*math.sin(dlmb/2)**2
+        return 2 * R * math.asin(math.sqrt(hav))
+
+    def project_point_onto_linestring(linestring_coords, lat, lon):
+        # linestring_coords: iterable of (lon, lat) tuples
+        points = [(c[1], c[0]) for c in linestring_coords]
+        seg_lengths = [haversine_m(points[i][0], points[i][1], points[i+1][0], points[i+1][1]) for i in range(len(points)-1)]
+        best_seg = 0; best_frac = 0.0; best_dist = float('inf'); best_proj = points[0]
+        for i in range(len(points)-1):
+            a = points[i]; b = points[i+1]
+            dx = b[0] - a[0]; dy = b[1] - a[1]
+            if dx == 0 and dy == 0:
+                frac = 0.0
+            else:
+                apx = lat - a[0]; apy = lon - a[1]
+                denom = dx*dx + dy*dy
+                frac = (apx*dx + apy*dy) / denom
+                frac = max(0.0, min(1.0, frac))
+            proj_lat = a[0] + (b[0]-a[0])*frac
+            proj_lon = a[1] + (b[1]-a[1])*frac
+            d = haversine_m(lat, lon, proj_lat, proj_lon)
+            if d < best_dist:
+                best_dist = d; best_seg = i; best_frac = frac; best_proj = (proj_lat, proj_lon)
+        # compute absolute distance along polyline to projection
+        cum = [0.0]
+        s = 0.0
+        for l in seg_lengths:
+            s += l; cum.append(s)
+        traveled = (best_frac * seg_lengths[best_seg]) if seg_lengths and best_seg < len(seg_lengths) else 0.0
+        abs_dist = cum[best_seg] + traveled
+        return {
+            'proj_point': best_proj,
+            'seg_idx': best_seg,
+            'seg_frac': best_frac,
+            'abs_dist': abs_dist,
+            'perp_dist_m': best_dist,
+            'total_length_m': cum[-1] if cum else 0.0,
+        }
 
     data = []
     for trip in trips:
+        logger.debug('[buses_to_destination] examining trip id=%s bus_id=%s route=%s', getattr(trip, 'id', None), getattr(trip.bus, 'id', None), getattr(trip.route, 'name', None))
         try:
-            # Get the latest position for the bus on this trip
             bus_pos = VehiclePosition.objects.filter(bus=trip.bus).latest('recorded_at')
-            eta_minutes = compute_eta(bus_pos, target_point)
-            data.append({
-                "bus_id": str(trip.bus.id),
-                "route": trip.route.name,
-                "eta_min": eta_minutes,
-                "current_lat": bus_pos.location.y,
-                "current_lon": bus_pos.location.x,
-            })
+            logger.debug('[buses_to_destination] found VehiclePosition for bus %s at %s (speed_mps=%s)', trip.bus.id, getattr(bus_pos, 'recorded_at', None), getattr(bus_pos, 'speed_mps', None))
         except VehiclePosition.DoesNotExist:
-            continue # Skip if this bus has no position data
+            logger.debug('[buses_to_destination] no VehiclePosition for bus %s; skipping', getattr(trip.bus, 'id', None))
+            continue
+
+        # Extract route geometry coords (GeoJSON-like order: (lon,lat))
+        geom = getattr(trip.route, 'geometry', None)
+        try:
+            coords = list(geom.coords)
+        except Exception:
+            # Skip routes without accessible coordinates
+            continue
+
+        # Project target and bus position onto route
+        target_proj = project_point_onto_linestring(coords, target_lat, target_lon)
+        bus_proj = project_point_onto_linestring(coords, bus_pos.location.y, bus_pos.location.x)
+        logger.debug('[buses_to_destination] trip=%s target_proj perp=%.1fm abs_dist=%.1fm total_len=%.1fm', getattr(trip, 'id', None), target_proj['perp_dist_m'], target_proj['abs_dist'], target_proj['total_length_m'])
+        logger.debug('[buses_to_destination] trip=%s bus_proj perp=%.1fm abs_dist=%.1fm', getattr(trip, 'id', None), bus_proj['perp_dist_m'], bus_proj['abs_dist'])
+
+        # Only consider this bus if the target projects onto the route reasonably close
+        # (perpendicular distance less than buffer) and if the bus is upstream of the target
+        if target_proj['perp_dist_m'] <= ROUTE_BUFFER_M:
+            # compute along-route distance from bus to target (positive means bus before target)
+            along_m = target_proj['abs_dist'] - bus_proj['abs_dist']
+            # allow small negative values (bus slightly beyond) but generally require within reasonable window
+            # estimate bus speed
+            speed_mps = bus_pos.speed_mps if getattr(bus_pos, 'speed_mps', None) and bus_pos.speed_mps > 0 else 10.0
+            eta_seconds = abs(along_m) / speed_mps if speed_mps > 0 else None
+            eta_minutes = round(eta_seconds/60.0, 1) if eta_seconds is not None else None
+
+            # include bus if it's going to pass near the target within a reasonable window (e.g., 90 minutes)
+            logger.debug('[buses_to_destination] trip=%s along_m=%.1f m eta_min=%s', getattr(trip, 'id', None), along_m, eta_minutes)
+            if eta_minutes is not None and eta_minutes <= 90:
+                entry = {
+                    'bus_id': str(trip.bus.id),
+                    'route': trip.route.name,
+                    'eta_min': eta_minutes,
+                    'current_lat': bus_pos.location.y,
+                    'current_lon': bus_pos.location.x,
+                    'distance_to_route_m': bus_proj['perp_dist_m'],
+                    'target_perp_dist_m': target_proj['perp_dist_m'],
+                    'along_route_to_target_m': along_m,
+                }
+                logger.info('[buses_to_destination] suggesting bus=%s route=%s eta_min=%.1f perp_dist=%.1f along_m=%.1f', entry['bus_id'], entry['route'], entry['eta_min'], entry['target_perp_dist_m'], entry['along_route_to_target_m'])
+                data.append(entry)
+
+    logger.info('[buses_to_destination] returning %d suggested buses', len(data))
     return Response(data)
 
 

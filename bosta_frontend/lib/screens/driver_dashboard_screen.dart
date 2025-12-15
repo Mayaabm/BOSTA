@@ -15,6 +15,7 @@ import 'dart:convert';
 import 'package:http/http.dart' as http;
 import 'package:bosta_frontend/services/trip_service.dart';
 import 'package:bosta_frontend/services/trip_service.dart' as TS;
+import '../utils/formatters.dart';
 
 class DriverDashboardScreen extends StatefulWidget {
   final String? tripId;
@@ -36,7 +37,7 @@ class _DriverDashboardScreenState extends State<DriverDashboardScreen> with Sing
   AppRoute? _assignedRoute;
 
   String _tripStatus = "Starting Trip...";
-  String _eta = "-- min";
+  String _eta = "--";
   String _distanceRemaining = "-- km";
   String? _destinationName;
   String? _routeName;
@@ -212,7 +213,7 @@ class _DriverDashboardScreenState extends State<DriverDashboardScreen> with Sing
 
         setState(() {
           _distanceRemaining = "$distanceKm km";
-          _eta = "$etaMinutes min";
+          _eta = formatEtaMinutes(etaMinutes);
         });
         return;
       }
@@ -345,37 +346,46 @@ class _DriverDashboardScreenState extends State<DriverDashboardScreen> with Sing
               markers: [
                 Marker(
                   point: fm.LatLng(startStop.location.latitude, startStop.location.longitude),
-                  width: 28,
-                  height: 28,
+                  width: 36,
+                  height: 24,
                   child: Container(
                     alignment: Alignment.center,
                     child: Container(
-                      width: 24,
-                      height: 24,
+                      width: 28,
+                      height: 18,
                       decoration: BoxDecoration(
-                        shape: BoxShape.circle,
-                        color: Colors.green,
-                        border: Border.all(color: Colors.white, width: 2.0),
+                        color: Colors.white,
+                        borderRadius: BorderRadius.circular(8),
+                        boxShadow: [BoxShadow(color: Colors.black26, blurRadius: 4, offset: Offset(0, 1))],
                       ),
-                      child: const Icon(Icons.play_arrow, size: 14, color: Colors.white),
                     ),
                   ),
                 ),
                 Marker(
                   point: fm.LatLng(endStop.location.latitude, endStop.location.longitude),
-                  width: 28,
-                  height: 28,
+                  width: 32,
+                  height: 32,
                   child: Container(
                     alignment: Alignment.center,
                     child: Container(
-                      width: 24,
-                      height: 24,
+                      width: 26,
+                      height: 26,
                       decoration: BoxDecoration(
                         shape: BoxShape.circle,
-                        color: Colors.red,
-                        border: Border.all(color: Colors.white, width: 2.0),
+                        color: Colors.white,
+                        border: Border.all(color: Colors.grey.shade300, width: 1.0),
+                        boxShadow: [BoxShadow(color: Colors.black12, blurRadius: 4, offset: Offset(0, 1))],
                       ),
-                      child: const Icon(Icons.stop, size: 12, color: Colors.white),
+                      child: Center(
+                        child: Container(
+                          width: 10,
+                          height: 10,
+                          decoration: const BoxDecoration(
+                            shape: BoxShape.circle,
+                            color: Colors.red,
+                          ),
+                        ),
+                      ),
                     ),
                   ),
                 ),
@@ -542,7 +552,7 @@ class _DriverDashboardScreenState extends State<DriverDashboardScreen> with Sing
 
       setState(() {
         _tripStatus = 'Trip ended';
-        _eta = '-- min';
+        _eta = '--';
         _distanceRemaining = '-- km';
       });
 

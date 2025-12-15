@@ -2,6 +2,7 @@ import 'dart:async';
 import 'package:flutter/material.dart';
 import 'package:google_fonts/google_fonts.dart';
 import 'package:intl/intl.dart';
+import '../utils/formatters.dart';
 
 import '../models/user_location.dart';
 import '../models/bus.dart';
@@ -84,7 +85,7 @@ class _BusDetailsModalState extends State<BusDetailsModal> {
             
             if (estimatedMinutes != null) {
               final minutes = estimatedMinutes.toInt();
-              etaFromDriver = '$minutes min';
+              etaFromDriver = formatEtaMinutes(minutes);
               debugPrint('[BusDetailsModal] ETA from driver to rider: $etaFromDriver (distance: ${distanceFromDriver?.toStringAsFixed(0)}m)');
             }
           }
@@ -303,12 +304,11 @@ class _BusDetailsModalState extends State<BusDetailsModal> {
             ],
           ),
           const SizedBox(height: 32),
-          // Trip Stats
+            // Trip Stats (ETA only)
             Row(
-              mainAxisAlignment: MainAxisAlignment.spaceAround,
+              mainAxisAlignment: MainAxisAlignment.center,
               children: [
                 _buildStatColumn('ETA to You', _etaFromDriver ?? bus.eta?.toMinutesString() ?? '...'),
-                _buildStatColumn('Distance', _distanceFromDriver != null ? '${(_distanceFromDriver! / 1000).toStringAsFixed(1)} km' : (bus.distanceMeters != null ? '${(bus.distanceMeters! / 1000).toStringAsFixed(1)} km' : '...')),
               ],
             ),
           const Spacer(),

@@ -84,13 +84,21 @@ class _LoginScreenState extends State<LoginScreen> {
               crossAxisAlignment: CrossAxisAlignment.stretch,
               children: [
                 const SizedBox(height: 60),
-                Text(
-                  'Welcome Back',
-                  textAlign: TextAlign.center,
-                  style: GoogleFonts.urbanist(
-                    fontSize: 32,
-                    fontWeight: FontWeight.bold,
-                    color: Colors.white,
+                Center(
+                  child: Row(
+                    mainAxisSize: MainAxisSize.min,
+                    children: [
+                      Text(
+                        'BOSTA',
+                        style: GoogleFonts.urbanist(
+                          fontSize: 32,
+                          fontWeight: FontWeight.bold,
+                          color: Colors.white,
+                        ),
+                      ),
+                      const SizedBox(width: 8),
+                      const Icon(Icons.directions_bus, color: Colors.white, size: 32),
+                    ],
                   ),
                 ),
                 const SizedBox(height: 10),

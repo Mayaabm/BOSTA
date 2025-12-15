@@ -5,6 +5,7 @@ import 'dart:math';
 import 'package:flutter/material.dart';
 import 'package:google_fonts/google_fonts.dart';
 import 'package:provider/provider.dart';
+import '../utils/formatters.dart';
 
 import '../../../../models/bus.dart';
 import 'bus_details_modal.dart';
@@ -58,14 +59,14 @@ class BusSuggestionCard extends StatelessWidget {
             const SizedBox(height: 12),
             Row(
               children: [
-                _buildEtaInfo("PICKUP", "$etaToPickup min"),
+                _buildEtaInfo("PICKUP", formatEtaMinutes(etaToPickup)),
                 Container(
                   height: 30,
                   width: 1,
                   color: Colors.white24,
                   margin: const EdgeInsets.symmetric(horizontal: 16),
                 ),
-                _buildEtaInfo("DESTINATION", "$etaToDest min"),
+                _buildEtaInfo("DESTINATION", formatEtaMinutes(etaToDest)),
                 const Spacer(),
                 _buildRating(rating),
               ],

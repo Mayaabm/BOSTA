@@ -1,5 +1,6 @@
 import 'package:flutter/material.dart';
 import 'package:google_fonts/google_fonts.dart';
+import '../utils/formatters.dart';
 import '../models/bus.dart';
 import '../models/trip_suggestion.dart';
 import 'rider_home_screen.dart';
@@ -152,7 +153,7 @@ class BusBottomSheet extends StatelessWidget {
               ),
               if (leg.etaMinutes != null)
                 Text(
-                  '~${leg.etaMinutes} min',
+                  '~${formatEtaMinutes(leg.etaMinutes)}',
                   style: GoogleFonts.urbanist(color: const Color(0xFF2ED8C3), fontWeight: FontWeight.bold),
                 ),
             ],

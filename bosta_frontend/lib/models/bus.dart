@@ -62,7 +62,7 @@ class Bus {
       speed: (json['speed_mps'] != null) ? (json['speed_mps'] * 3.6) : 0.0, // Convert m/s to km/h
       distanceMeters: json['distance_m']?.toDouble(),
       routeName: json['route_name'],
-      driverName: json['driver']?['name'], // Assuming nested driver object
+      driverName: json['driver']?['name'] ?? json['driver_name'], // Prefer nested driver object, fall back to top-level driver_name
       driverRating: (json['driver']?['rating'] as num?)?.toDouble(),
       lastReportedAt: json['last_reported_at'],
       route: json['route'] != null ? AppRoute.fromJson(json['route']) : null,

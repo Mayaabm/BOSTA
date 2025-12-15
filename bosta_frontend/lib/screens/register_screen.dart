@@ -137,22 +137,21 @@ class _RegisterScreenState extends State<RegisterScreen> {
                 _buildRoleSelector(),
                 const SizedBox(height: 20),
                 _buildTextField(_usernameController, 'Username', Icons.person_outline),
+                const SizedBox(height: 20),
                 _buildTextField(_emailController, 'Email Address', Icons.email_outlined, keyboardType: TextInputType.emailAddress),
                 const SizedBox(height: 20),
                 _buildTextField(_passwordController, 'Password', Icons.lock_outline, obscureText: true, onFieldSubmitted: (_) => _submitForm()),
-                const SizedBox(height: 16),
-                // Driver onboarding fields
+                const SizedBox(height: 20),
+                // For drivers, onboarding (name/phone/bus) happens after signup.
+                // Keep the controllers available, but do not show the fields here.
                 if (_selectedRole == UserRole.driver) ...[
-                  _buildTextField(_firstNameController, 'First Name', Icons.person),
-                  const SizedBox(height: 8),
-                  _buildTextField(_lastNameController, 'Last Name', Icons.person),
-                  const SizedBox(height: 8),
-                  _buildTextField(_phoneController, 'Phone Number', Icons.phone, keyboardType: TextInputType.phone),
-                  const SizedBox(height: 8),
-                  _buildTextField(_busPlateController, 'Bus Plate Number (optional)', Icons.directions_bus_outlined),
-                  const SizedBox(height: 8),
-                  _buildTextField(_busCapacityController, 'Bus Capacity (optional)', Icons.group_outlined, keyboardType: TextInputType.number),
-                  const SizedBox(height: 16),
+                  const SizedBox(height: 12),
+                  Text(
+                    'Drivers will complete onboarding after Sign Up.',
+                    textAlign: TextAlign.center,
+                    style: GoogleFonts.urbanist(fontSize: 14, color: Colors.grey),
+                  ),
+                  const SizedBox(height: 20),
                 ],
                 const SizedBox(height: 30),
                 if (_errorMessage != null)

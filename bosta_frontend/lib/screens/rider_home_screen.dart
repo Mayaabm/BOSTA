@@ -9,6 +9,7 @@ import 'package:bosta_frontend/models/user_location.dart';
 import 'package:bosta_frontend/screens/where_to_search_bar.dart';
 import 'package:geolocator/geolocator.dart';
 import 'package:google_fonts/google_fonts.dart';
+import '../utils/formatters.dart';
 import 'package:latlong2/latlong.dart';
 import 'package:sliding_up_panel/sliding_up_panel.dart';
 import 'package:provider/provider.dart';
@@ -338,7 +339,7 @@ class _RiderHomeScreenState extends State<RiderHomeScreen> with TickerProviderSt
           debugPrint("[Rider] ETA bus→rider: "+
               "${(durationSeconds/60).toStringAsFixed(1)} min, ${(distanceMeters/1000).toStringAsFixed(2)} km");
           setState(() {
-            _etaBusToRider = "${(durationSeconds/60).ceil()} min";
+            _etaBusToRider = formatEtaMinutes((durationSeconds/60).ceil());
           });
         } else {
           debugPrint("[Rider] No route found for bus→rider");
@@ -481,6 +482,46 @@ class _RiderHomeScreenState extends State<RiderHomeScreen> with TickerProviderSt
                   Expanded(
                     child: ElevatedButton(
                       onPressed: () async {
+                        // Prefer backend-provided snapped_destination if available,
+                        // otherwise fall back to the rider-chosen coordinates.
+                        final snapped = result.snappedData ?? {};
+                        final snappedDest = snapped['snapped_destination'];
+                        if (snappedDest != null && snappedDest['geometry'] != null) {
+                          try {
+                            final coords = snappedDest['geometry']['coordinates'];
+                            final lon = (coords[0] as num).toDouble();
+                            final lat = (coords[1] as num).toDouble();
+                            final name = (snappedDest['properties'] != null
+                                    ? (snappedDest['properties']['name'] ?? snappedDest['properties']['stop_name'])
+                                    : null) ??
+                                result.name;
+                            final sid = snappedDest['properties'] != null ? (snappedDest['properties']['stop_id']?.toString()) : null;
+                            if (mounted) {
+                              setState(() {
+                                _snappedStopLocation = LatLng(lat, lon);
+                                _snappedStopName = name;
+                                _snappedStopId = sid;
+                              });
+                            }
+                          } catch (e) {
+                            // If parsing snapped destination fails, fallback to chosen location
+                            if (mounted) {
+                              setState(() {
+                                _snappedStopLocation = LatLng(result.latitude, result.longitude);
+                                _snappedStopName = result.name;
+                                _snappedStopId = result.stopId != null ? result.stopId!.toString() : null;
+                              });
+                            }
+                          }
+                        } else {
+                          if (mounted) {
+                            setState(() {
+                              _snappedStopLocation = LatLng(result.latitude, result.longitude);
+                              _snappedStopName = result.name;
+                              _snappedStopId = result.stopId != null ? result.stopId!.toString() : null;
+                            });
+                          }
+                        }
                         Navigator.of(ctx).pop();
                         // Proceed with planning the trip
                         _onViewChanged(RiderView.planTrip);
@@ -497,7 +538,7 @@ class _RiderHomeScreenState extends State<RiderHomeScreen> with TickerProviderSt
                             if (plan != null && plan['eta_minutes'] != null) {
                               final eta = plan['eta_minutes'];
                               if (mounted) ScaffoldMessenger.of(context).showSnackBar(
-                                SnackBar(content: Text('Estimated arrival: ${eta} minutes')),
+                                SnackBar(content: Text('Estimated arrival: ${formatEtaMinutes((eta as num?)?.toInt())}')),
                               );
                             }
                           }
@@ -635,7 +676,7 @@ class _RiderHomeScreenState extends State<RiderHomeScreen> with TickerProviderSt
                                 Container(
                                   width: 20,
                                   height: 20,
-                                  decoration: BoxDecoration(shape: BoxShape.circle, color: Colors.orange, border: Border.all(color: Colors.white, width: 2)),
+                                  decoration: BoxDecoration(shape: BoxShape.circle, color: Colors.red, border: Border.all(color: Colors.white, width: 2)),
                                 ),
                               ],
                             ),
@@ -665,7 +706,7 @@ class _RiderHomeScreenState extends State<RiderHomeScreen> with TickerProviderSt
                               Container(
                                 width: 20,
                                 height: 20,
-                                decoration: BoxDecoration(shape: BoxShape.circle, color: Colors.orange, border: Border.all(color: Colors.white, width: 2)),
+                                decoration: BoxDecoration(shape: BoxShape.circle, color: Colors.red, border: Border.all(color: Colors.white, width: 2)),
                               ),
                             ],
                           ),
