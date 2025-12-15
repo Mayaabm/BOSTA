@@ -55,8 +55,10 @@ class _RiderHomeScreenState extends State<RiderHomeScreen> with TickerProviderSt
 
   RiderView _currentView = RiderView.planTrip;
   List<TripSuggestion> _tripSuggestions = []; // For trip planning
+  List<LatLng>? _suggestedRoutePoints;
   Bus? _selectedBus;
   Timer? _selectedBusDetailsTimer;
+  Timer? _selectedBusEtaTimer;
   bool _isAutoCentering = false;
   bool _useMockLocation = false; // Dev toggle
 
@@ -93,6 +95,7 @@ class _RiderHomeScreenState extends State<RiderHomeScreen> with TickerProviderSt
     _positionStream?.cancel();
     _busUpdateTimer?.cancel();
     _selectedBusDetailsTimer?.cancel();
+    _selectedBusEtaTimer?.cancel();
     _mockLocationPollTimer?.cancel();
     _markerAnimationController.dispose();
     _pulseController.dispose();
@@ -261,6 +264,7 @@ class _RiderHomeScreenState extends State<RiderHomeScreen> with TickerProviderSt
 
     // Stop any previous timer
     _selectedBusDetailsTimer?.cancel();
+    _selectedBusEtaTimer?.cancel();
 
     // Fetch ETA from bus to rider location
     _fetchEtaBusToRider(bus);
@@ -297,6 +301,14 @@ class _RiderHomeScreenState extends State<RiderHomeScreen> with TickerProviderSt
     _selectedBusDetailsTimer = Timer.periodic(const Duration(seconds: 3), (timer) {
       _fetchSelectedBusDetails(bus.id);
     });
+
+    // Poll ETA separately so we always use the most recent `_selectedBus` position.
+    _selectedBusEtaTimer = Timer.periodic(const Duration(seconds: 5), (timer) {
+      // Avoid overlapping ETA fetches
+      if (!_isFetchingEta && _selectedBus != null) {
+        _fetchEtaBusToRider(_selectedBus!);
+      }
+    });
   }
 
   void _deselectBus() {
@@ -318,17 +330,28 @@ class _RiderHomeScreenState extends State<RiderHomeScreen> with TickerProviderSt
       _isFetchingEta = true;
       _etaBusToRider = null;
     });
-    debugPrint("[Rider] Fetching ETA for bus ${bus.id} to rider...");
+    debugPrint("[Rider] Fetching ETA for bus ${bus.id} to rider (using backend location)...");
     try {
-      final busLat = bus.latitude;
-      final busLon = bus.longitude;
+      // Prefer authoritative latest bus location from backend
+      Bus latestBus = bus;
+      try {
+        latestBus = await BusService.getBusDetails(bus.id);
+      } catch (e) {
+        debugPrint('[Rider] Warning: failed to fetch latest bus details, falling back to provided bus: $e');
+      }
+
+      final busLat = latestBus.latitude;
+      final busLon = latestBus.longitude;
       final riderLat = _currentPosition!.latitude;
       final riderLon = _currentPosition!.longitude;
+
+      // Build Mapbox directions URL using authoritative bus position as origin.
       final originCoords = "$busLon,$busLat";
       final destCoords = "$riderLon,$riderLat";
       final url =
           'https://api.mapbox.com/directions/v5/mapbox/driving-traffic/$originCoords;$destCoords?access_token=${TripService.getMapboxAccessToken()}&overview=full&geometries=geojson';
       debugPrint("[Rider] Mapbox ETA bus→rider: $url");
+
       final resp = await http.get(Uri.parse(url));
       if (resp.statusCode == 200) {
         final data = json.decode(resp.body);
@@ -336,10 +359,10 @@ class _RiderHomeScreenState extends State<RiderHomeScreen> with TickerProviderSt
           final route = data['routes'][0];
           final double durationSeconds = route['duration']?.toDouble() ?? 0.0;
           final double distanceMeters = route['distance']?.toDouble() ?? 0.0;
-          debugPrint("[Rider] ETA bus→rider: "+
-              "${(durationSeconds/60).toStringAsFixed(1)} min, ${(distanceMeters/1000).toStringAsFixed(2)} km");
+          debugPrint("[Rider] ETA bus→rider: " +
+              "${(durationSeconds / 60).toStringAsFixed(1)} min, ${(distanceMeters / 1000).toStringAsFixed(2)} km");
           setState(() {
-            _etaBusToRider = formatEtaMinutes((durationSeconds/60).ceil());
+            _etaBusToRider = formatEtaMinutes((durationSeconds / 60).ceil());
           });
         } else {
           debugPrint("[Rider] No route found for bus→rider");
@@ -359,7 +382,9 @@ class _RiderHomeScreenState extends State<RiderHomeScreen> with TickerProviderSt
         _etaBusToRider = "--";
       });
     }
-    if (mounted) setState(() { _isFetchingEta = false; });
+    if (mounted) setState(() {
+      _isFetchingEta = false;
+    });
   }
 
   Future<void> _fetchSelectedBusDetails(String busId) async {
@@ -424,6 +449,51 @@ class _RiderHomeScreenState extends State<RiderHomeScreen> with TickerProviderSt
       endLon: destination.longitude,
     );
     setState(() => _tripSuggestions = suggestions);
+  }
+
+  /// Called when a trip suggestion card is tapped. Fetches a route geometry
+  /// from Mapbox and draws it on the map between the rider and the suggested dest.
+  Future<void> _onTripSuggestionSelected(TripSuggestion suggestion) async {
+    if (_currentPosition == null) return;
+    if (suggestion.legs.isEmpty) return;
+    final first = suggestion.legs.first;
+    if (first.destLat == null || first.destLon == null) return;
+
+    try {
+      final originCoords = '${_currentPosition!.longitude},${_currentPosition!.latitude}';
+      final destCoords = '${first.destLon},${first.destLat}';
+      final url =
+          'https://api.mapbox.com/directions/v5/mapbox/driving-traffic/$originCoords;$destCoords?access_token=${TripService.getMapboxAccessToken()}&overview=full&geometries=geojson';
+      final resp = await http.get(Uri.parse(url));
+      if (resp.statusCode == 200) {
+        final data = json.decode(resp.body);
+        if (data['routes'] != null && data['routes'].isNotEmpty) {
+          final route = data['routes'][0];
+          final geom = route['geometry'];
+          if (geom != null && geom['coordinates'] is List) {
+            final coords = geom['coordinates'] as List;
+            final List<LatLng> pts = coords.map<LatLng>((c) {
+              final lon = (c[0] as num).toDouble();
+              final lat = (c[1] as num).toDouble();
+              return LatLng(lat, lon);
+            }).toList();
+            setState(() {
+              _suggestedRoutePoints = pts;
+            });
+            // Move map to show the route (center on midpoint)
+            if (pts.isNotEmpty) {
+              final mid = pts[pts.length ~/ 2];
+              mapController.move(mid, 14.5);
+            }
+            return;
+          }
+        }
+      }
+    } catch (e) {
+      debugPrint('Failed to fetch route for suggestion: $e');
+    }
+    // fallback: clear route if failed
+    setState(() => _suggestedRoutePoints = null);
   }
 
   /// Handles the selection of a destination stop from the search bar.
@@ -624,6 +694,9 @@ class _RiderHomeScreenState extends State<RiderHomeScreen> with TickerProviderSt
             // When a bus is tapped in the list, treat it like a map marker tap.
             _onBusMarkerTapped(bus);
           },
+          onTripSuggestionSelected: (suggestion) {
+            _onTripSuggestionSelected(suggestion);
+          },
           snappedStopId: _snappedStopId,
           riderLat: _currentPosition?.latitude,
           riderLon: _currentPosition?.longitude,
@@ -656,6 +729,17 @@ class _RiderHomeScreenState extends State<RiderHomeScreen> with TickerProviderSt
                             ? const Color(0xFF2ED8C3) // Highlight in solid teal when selected
                             : Colors.grey.withOpacity(0.5),
                         strokeWidth: 5,
+                      ),
+                    ],
+                  ),
+                if (_suggestedRoutePoints != null && _suggestedRoutePoints!.isNotEmpty)
+                  PolylineLayer(
+                    polylines: [
+                      Polyline(
+                        points: _suggestedRoutePoints!,
+                        color: const Color(0xFF6C9CFF),
+                        strokeWidth: 4,
+                        isDotted: false,
                       ),
                     ],
                   ),
@@ -789,6 +873,7 @@ class _RiderHomeScreenState extends State<RiderHomeScreen> with TickerProviderSt
       } else {
         _displayedBuses = []; // Clear buses when switching to plan trip
         _tripSuggestions = []; // Clear suggestions as well
+        _suggestedRoutePoints = null; // Clear any drawn suggestion route
       }
     });
   }

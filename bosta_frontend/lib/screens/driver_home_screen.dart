@@ -538,7 +538,7 @@ class _DriverHomeScreenState extends State<DriverHomeScreen> {
                 return DropdownMenuItem<String>(
                   value: stop.id,
                   child: Text(
-                    'Stop ${stop.order}: ${stop.name}',
+                    stop.name,
                     overflow: TextOverflow.ellipsis,
                     textAlign: TextAlign.end,
                   ),

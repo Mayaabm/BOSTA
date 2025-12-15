@@ -17,6 +17,7 @@ class BusBottomSheet extends StatelessWidget {
   final List<TripSuggestion> tripSuggestions;
   final List<Bus> nearbyBuses;
   final Function(Bus) onBusSelected;
+  final Function(TripSuggestion)? onTripSuggestionSelected;
   // Optional: snapped stop id (string) and rider coordinates for distance calc
   final String? snappedStopId;
   final double? riderLat;
@@ -29,6 +30,7 @@ class BusBottomSheet extends StatelessWidget {
     required this.tripSuggestions,
     required this.nearbyBuses,
     required this.onBusSelected,
+    this.onTripSuggestionSelected,
     this.snappedStopId,
     this.riderLat,
     this.riderLon,
@@ -127,37 +129,42 @@ class BusBottomSheet extends StatelessWidget {
     return Card(
       color: const Color(0xFF2A2F33),
       margin: const EdgeInsets.symmetric(horizontal: 16, vertical: 8),
-      child: Padding(
-        padding: const EdgeInsets.all(16.0),
-        child: Column(
-          crossAxisAlignment: CrossAxisAlignment.start,
-          children: [
-            Text(
-              "Suggestion $suggestionNumber",
-              style: GoogleFonts.urbanist(fontSize: 18, fontWeight: FontWeight.bold, color: const Color(0xFF2ED8C3)),
-            ),
-            const SizedBox(height: 8),
-            // Show a single centered distance line (simplified view).
-            Builder(builder: (ctx) {
-              String distanceLabel = '';
-              try {
-                final first = suggestion.legs.isNotEmpty ? suggestion.legs.first : null;
-                if (first != null && first.destLat != null && first.destLon != null && riderLat != null && riderLon != null) {
-                  final meters = Geolocator.distanceBetween(riderLat!, riderLon!, first.destLat!, first.destLon!);
-                  if (meters < 1000) distanceLabel = '${meters.round()} m';
-                  else distanceLabel = '${(meters / 1000).toStringAsFixed(1)} km';
-                }
-              } catch (_) {}
+      child: InkWell(
+        onTap: () {
+          if (onTripSuggestionSelected != null) onTripSuggestionSelected!(suggestion);
+        },
+        child: Padding(
+          padding: const EdgeInsets.all(16.0),
+          child: Column(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              Text(
+                "Suggestion $suggestionNumber",
+                style: GoogleFonts.urbanist(fontSize: 18, fontWeight: FontWeight.bold, color: const Color(0xFF2ED8C3)),
+              ),
+              const SizedBox(height: 8),
+              // Show a single centered distance line (simplified view).
+              Builder(builder: (ctx) {
+                String distanceLabel = '';
+                try {
+                  final first = suggestion.legs.isNotEmpty ? suggestion.legs.first : null;
+                  if (first != null && first.destLat != null && first.destLon != null && riderLat != null && riderLon != null) {
+                    final meters = Geolocator.distanceBetween(riderLat!, riderLon!, first.destLat!, first.destLon!);
+                    if (meters < 1000) distanceLabel = '${meters.round()} m';
+                    else distanceLabel = '${(meters / 1000).toStringAsFixed(1)} km';
+                  }
+                } catch (_) {}
 
-              return Padding(
-                padding: const EdgeInsets.only(bottom: 12.0),
-                child: Center(
-                  child: Text(distanceLabel.isNotEmpty ? distanceLabel : '', style: GoogleFonts.urbanist(color: Colors.white70, fontSize: 14)),
-                ),
-              );
-            }),
-            ...suggestion.legs.map((leg) => _buildTripLegItem(leg)).toList(),
-          ],
+                return Padding(
+                  padding: const EdgeInsets.only(bottom: 12.0),
+                  child: Center(
+                    child: Text(distanceLabel.isNotEmpty ? distanceLabel : '', style: GoogleFonts.urbanist(color: Colors.white70, fontSize: 14)),
+                  ),
+                );
+              }),
+              ...suggestion.legs.map((leg) => _buildTripLegItem(leg)).toList(),
+            ],
+          ),
         ),
       ),
     );
